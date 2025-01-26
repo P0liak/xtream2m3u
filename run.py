@@ -1,11 +1,34 @@
 import json
+import socket
+import urllib.parse
 
 import requests
+from dns.resolver import NXDOMAIN, NoAnswer, NoNameservers, Resolver, Timeout
 from fake_useragent import UserAgent
 from flask import Flask, Response, request
 from requests.exceptions import SSLError
 
 app = Flask(__name__)
+
+def resolve_dns(hostname):
+    # List of DNS servers to try
+    dns_servers = [
+        ['1.1.1.1', '1.0.0.1'],  # Cloudflare
+        ['8.8.8.8', '8.8.4.4'],  # Google
+        ['9.9.9.9', '149.112.112.112'],  # Quad9
+    ]
+
+    for servers in dns_servers:
+        try:
+            resolver = Resolver()
+            resolver.nameservers = servers
+            resolver.timeout = 2
+            resolver.lifetime = 4
+            answers = resolver.resolve(hostname, 'A')
+            return str(answers[0])  # Return the first IP address
+        except (NXDOMAIN, NoAnswer, NoNameservers, Timeout):
+            continue
+    return None
 
 def curl_request(url):
     try:
@@ -16,9 +39,37 @@ def curl_request(url):
             'Accept-Language': 'en-US,en;q=0.5',
             'Connection': 'keep-alive',
         }
+
+        # Parse the URL to get the hostname
+        parsed_url = urllib.parse.urlparse(url)
+        hostname = parsed_url.hostname
+
+        # Try to resolve DNS first
+        if hostname:
+            ip = resolve_dns(hostname)
+            if ip:
+                # Reconstruct the URL with IP address
+                url_parts = list(parsed_url)
+                url_parts[1] = ip  # Replace hostname with IP
+                ip_url = urllib.parse.urlunparse(url_parts)
+
+                # Try with original URL first
+                try:
+                    response = requests.get(url, headers=headers)
+                    response.raise_for_status()
+                    return response.text
+                except requests.RequestException:
+                    # If original URL fails, try with IP
+                    headers['Host'] = hostname  # Keep original hostname in Host header
+                    response = requests.get(ip_url, headers=headers)
+                    response.raise_for_status()
+                    return response.text
+
+        # If DNS resolution fails or no hostname, try original URL
         response = requests.get(url, headers=headers)
         response.raise_for_status()
         return response.text
+
     except SSLError:
         return {'error': 'SSL Error', 'details': 'Failed to verify SSL certificate'}, 503
     except requests.RequestException as e:
