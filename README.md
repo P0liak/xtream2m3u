@@ -52,7 +52,7 @@ To use xtream2m3u, you'll need:
 For deployment, you'll need one of the following:
 
 - Docker and Docker Compose
-- Python 3.9 or higher
+- Python 3.12 or higher
 
 ## Installation
 
@@ -93,30 +93,67 @@ For deployment, you'll need one of the following:
 
 ## Usage
 
-### API Endpoint
+### API Endpoints
 
-The endpoint for generating M3U playlists is:
+The application provides several endpoints for generating playlists and proxying media:
+
+#### M3U Playlist Generation
 
 ```
 GET /m3u
 ```
 
-#### Query Parameters
+##### Query Parameters
+
+- `url` (required): The base URL of your IPTV service
+- `username` (required): Your IPTV service username
+- `password` (required): Your IPTV service password
+- `unwanted_groups` (optional): A comma-separated list of group names to exclude
+- `nostreamproxy` (optional): Set to 'true' to disable stream proxying
+
+##### Example Request
+
+```
+http://localhost:5000/m3u?url=http://your-iptv-service.com&username=your_username&password=your_password&unwanted_groups=news,sports
+```
+
+#### XMLTV Guide Generation
+
+```
+GET /xmltv
+```
+
+##### Query Parameters
 
 - `url` (required): The base URL of your IPTV service
 - `username` (required): Your IPTV service username
 - `password` (required): Your IPTV service password
 - `unwanted_groups` (optional): A comma-separated list of group names to exclude
 
-#### Example Request
+##### Example Request
 
 ```
-http://localhost:5000/m3u?url=http://your-iptv-service.com&username=your_username&password=your_password&unwanted_groups=news,sports
+http://localhost:5000/xmltv?url=http://your-iptv-service.com&username=your_username&password=your_password&unwanted_groups=news,sports
 ```
 
-#### Response
+#### Image Proxy
 
-The API will return an M3U playlist file that you can use with compatible media players.
+```
+GET /image-proxy/<encoded_image_url>
+```
+
+Proxies image requests, like channel logos and EPG images.
+
+#### Stream Proxy
+
+```
+GET /stream-proxy/<encoded_stream_url>
+```
+
+Proxies video streams. Supports the following formats:
+- MPEG-TS (.ts)
+- HLS (.m3u8)
+- Generic video streams
 
 ## License
 
