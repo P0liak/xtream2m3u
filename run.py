@@ -1,4 +1,5 @@
 import json
+import logging
 import socket
 import urllib.parse
 
@@ -7,6 +8,9 @@ from dns.resolver import NXDOMAIN, NoAnswer, NoNameservers, Resolver, Timeout
 from fake_useragent import UserAgent
 from flask import Flask, Response, request
 from requests.exceptions import SSLError
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -92,30 +96,60 @@ def proxy_image(image_url):
     try:
         # Decode the URL
         original_url = urllib.parse.unquote(image_url)
+        logger.info(f"Image proxy request for: {original_url}")
 
-        # Make request with stream=True to handle large images
-        response = requests.get(original_url, stream=True)
+        # Make request with stream=True and timeout
+        response = requests.get(original_url, stream=True, timeout=10)
         response.raise_for_status()
 
-        # Get content type from response, default to image/jpeg
-        content_type = response.headers.get('Content-Type', 'image/jpeg')
+        # Get content type from response
+        content_type = response.headers.get('Content-Type', '')
+        logger.info(f"Image response headers: {dict(response.headers)}")
+
+        if not content_type.startswith('image/'):
+            logger.error(f"Invalid content type for image: {content_type}")
+            return Response('Invalid image type', status=415)
 
         def generate():
-            for chunk in response.iter_content(chunk_size=8192):
-                yield chunk
+            try:
+                bytes_sent = 0
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        bytes_sent += len(chunk)
+                        yield chunk
+                logger.info(f"Image completed, sent {bytes_sent} bytes")
+            except Exception as e:
+                logger.error(f"Image streaming error in generator: {str(e)}")
+                raise
+
+        headers = {
+            'Cache-Control': 'public, max-age=31536000',
+            'Access-Control-Allow-Origin': '*',
+        }
+
+        # Only add Content-Length if we have it and it's not chunked transfer
+        if ('Content-Length' in response.headers and
+            'Transfer-Encoding' not in response.headers):
+            headers['Content-Length'] = response.headers['Content-Length']
+        else:
+            headers['Transfer-Encoding'] = 'chunked'
+
+        logger.info(f"Sending image response with headers: {headers}")
 
         return Response(
             generate(),
             mimetype=content_type,
-            headers={
-                'Cache-Control': 'public, max-age=31536000',
-                'Access-Control-Allow-Origin': '*',
-                'Content-Length': response.headers.get('Content-Length')
-            }
+            headers=headers
         )
+    except requests.Timeout:
+        logger.error(f"Timeout fetching image: {original_url}")
+        return Response('Image fetch timeout', status=504)
+    except requests.HTTPError as e:
+        logger.error(f"HTTP error fetching image: {str(e)}")
+        return Response(f'Failed to fetch image: {str(e)}', status=e.response.status_code)
     except Exception as e:
-        print(f"Image proxy error: {str(e)}")
-        return Response('', mimetype='image/jpeg')
+        logger.error(f"Image proxy error: {str(e)}")
+        return Response('Failed to process image', status=500)
 
 @app.route('/xmltv', methods=['GET'])
 def generate_xmltv():
@@ -231,45 +265,75 @@ def proxy_stream(stream_url):
     try:
         # Decode the URL
         original_url = urllib.parse.unquote(stream_url)
+        logger.info(f"Stream proxy request for: {original_url}")
 
         # Make request with proper headers
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
 
-        response = requests.get(original_url, stream=True, headers=headers)
+        # Add timeout to prevent hanging
+        response = requests.get(original_url, stream=True, headers=headers, timeout=10)
         response.raise_for_status()
+
+        logger.info(f"Stream response headers: {dict(response.headers)}")
+
+        # Get content type from response
+        content_type = response.headers.get('Content-Type')
+        if not content_type:
+            # Try to determine content type from URL
+            if original_url.endswith('.ts'):
+                content_type = 'video/MP2T'
+            elif original_url.endswith('.m3u8'):
+                content_type = 'application/vnd.apple.mpegurl'
+            else:
+                content_type = 'application/octet-stream'
+
+        logger.info(f"Using content type: {content_type}")
 
         def generate():
             try:
-                for chunk in response.iter_content(chunk_size=64*1024):  # Increased chunk size
+                bytes_sent = 0
+                for chunk in response.iter_content(chunk_size=64*1024):
                     if chunk:
+                        bytes_sent += len(chunk)
                         yield chunk
+                logger.info(f"Stream completed, sent {bytes_sent} bytes")
             except Exception as e:
-                print(f"Streaming error: {str(e)}")
+                logger.error(f"Streaming error in generator: {str(e)}")
+                raise
 
-        # Copy important headers from original response
         response_headers = {
             'Access-Control-Allow-Origin': '*',
-            'Content-Type': response.headers.get('Content-Type', 'video/MP2T'),
+            'Content-Type': content_type,
             'Accept-Ranges': 'bytes',
             'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'Transfer-Encoding': 'chunked'
+            'Connection': 'keep-alive'
         }
 
-        # Add Content-Length if available
-        if 'Content-Length' in response.headers:
+        # Only add Content-Length if we have it and it's not chunked transfer
+        if ('Content-Length' in response.headers and
+            'Transfer-Encoding' not in response.headers):
             response_headers['Content-Length'] = response.headers['Content-Length']
+        else:
+            response_headers['Transfer-Encoding'] = 'chunked'
+
+        logger.info(f"Sending response with headers: {response_headers}")
 
         return Response(
             generate(),
             headers=response_headers,
-            direct_passthrough=True  # More efficient streaming
+            direct_passthrough=True
         )
+    except requests.Timeout:
+        logger.error(f"Timeout fetching stream: {original_url}")
+        return Response('Stream timeout', status=504)
+    except requests.HTTPError as e:
+        logger.error(f"HTTP error fetching stream: {str(e)}")
+        return Response(f'Failed to fetch stream: {str(e)}', status=e.response.status_code)
     except Exception as e:
-        print(f"Stream proxy error: {str(e)}")
-        return Response('', mimetype='video/MP2T')
+        logger.error(f"Stream proxy error: {str(e)}")
+        return Response('Failed to process stream', status=500)
 
 @app.route('/m3u', methods=['GET'])
 def generate_m3u():
@@ -381,4 +445,4 @@ def generate_m3u():
     return Response(m3u_playlist, mimetype='audio/x-scpls', headers={"Content-Disposition": "attachment; filename=LiveStream.m3u"})
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, host='0.0.0.0')
