@@ -1,5 +1,5 @@
 # Use an official Python runtime as the base image
-FROM python:3.9-slim
+FROM python:3.12-slim
 
 # Set the working directory in the container
 WORKDIR /app
@@ -8,7 +8,7 @@ WORKDIR /app
 COPY . /app
 
 # Install the required packages
-RUN pip install -r requirements.txt
+RUN pip install -r requirements.txt --no-cache-dir
 
 # Make port 5000 available to the world outside this container
 EXPOSE 5000
