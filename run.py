@@ -22,6 +22,8 @@ def resolve_dns(hostname):
         ['9.9.9.9', '149.112.112.112'],  # Quad9
     ]
 
+    logger.info(f"Attempting to resolve hostname: {hostname}")
+
     for servers in dns_servers:
         try:
             resolver = Resolver()
@@ -29,9 +31,14 @@ def resolve_dns(hostname):
             resolver.timeout = 2
             resolver.lifetime = 4
             answers = resolver.resolve(hostname, 'A')
-            return str(answers[0])  # Return the first IP address
-        except (NXDOMAIN, NoAnswer, NoNameservers, Timeout):
+            ip = str(answers[0])
+            logger.info(f"Successfully resolved {hostname} to {ip} using {servers}")
+            return ip
+        except (NXDOMAIN, NoAnswer, NoNameservers, Timeout) as e:
+            logger.warning(f"Failed to resolve {hostname} using {servers}: {str(e)}")
             continue
+
+    logger.error(f"All DNS resolution attempts failed for {hostname}")
     return None
 
 def curl_request(url, binary=False):
@@ -98,8 +105,26 @@ def proxy_image(image_url):
         original_url = urllib.parse.unquote(image_url)
         logger.info(f"Image proxy request for: {original_url}")
 
+        # Parse URL and resolve DNS
+        parsed_url = urllib.parse.urlparse(original_url)
+        hostname = parsed_url.hostname
+        if hostname:
+            ip = resolve_dns(hostname)
+            if ip:
+                # Reconstruct URL with IP
+                url_parts = list(parsed_url)
+                url_parts[1] = ip
+                ip_url = urllib.parse.urlunparse(url_parts)
+                headers = {'Host': hostname}  # Keep original hostname
+            else:
+                ip_url = original_url
+                headers = {}
+        else:
+            ip_url = original_url
+            headers = {}
+
         # Make request with stream=True and timeout
-        response = requests.get(original_url, stream=True, timeout=10)
+        response = requests.get(ip_url, stream=True, timeout=10, headers=headers)
         response.raise_for_status()
 
         # Get content type from response
@@ -267,13 +292,28 @@ def proxy_stream(stream_url):
         original_url = urllib.parse.unquote(stream_url)
         logger.info(f"Stream proxy request for: {original_url}")
 
-        # Make request with proper headers
+        # Parse URL and resolve DNS
+        parsed_url = urllib.parse.urlparse(original_url)
+        hostname = parsed_url.hostname
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
 
+        if hostname:
+            ip = resolve_dns(hostname)
+            if ip:
+                # Reconstruct URL with IP
+                url_parts = list(parsed_url)
+                url_parts[1] = ip
+                ip_url = urllib.parse.urlunparse(url_parts)
+                headers['Host'] = hostname  # Keep original hostname
+            else:
+                ip_url = original_url
+        else:
+            ip_url = original_url
+
         # Add timeout to prevent hanging
-        response = requests.get(original_url, stream=True, headers=headers, timeout=10)
+        response = requests.get(ip_url, stream=True, headers=headers, timeout=10)
         response.raise_for_status()
 
         logger.info(f"Stream response headers: {dict(response.headers)}")
