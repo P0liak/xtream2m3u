@@ -93,24 +93,29 @@ def proxy_image(image_url):
         # Decode the URL
         original_url = urllib.parse.unquote(image_url)
 
-        # Fetch the image using our existing curl_request function with binary=True
-        response = curl_request(original_url, binary=True)
+        # Make request with stream=True to handle large images
+        response = requests.get(original_url, stream=True)
+        response.raise_for_status()
 
-        if isinstance(response, tuple):  # Error response
-            return Response('', mimetype='image/png')
+        # Get content type from response, default to image/jpeg
+        content_type = response.headers.get('Content-Type', 'image/jpeg')
 
-        # Return the image with appropriate headers
+        def generate():
+            for chunk in response.iter_content(chunk_size=8192):
+                yield chunk
+
         return Response(
-            response,
-            mimetype='image/*',
+            generate(),
+            mimetype=content_type,
             headers={
                 'Cache-Control': 'public, max-age=31536000',
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': '*',
+                'Content-Length': response.headers.get('Content-Length')
             }
         )
     except Exception as e:
         print(f"Image proxy error: {str(e)}")
-        return Response('', mimetype='image/png')
+        return Response('', mimetype='image/jpeg')
 
 @app.route('/xmltv', methods=['GET'])
 def generate_xmltv():
@@ -227,19 +232,40 @@ def proxy_stream(stream_url):
         # Decode the URL
         original_url = urllib.parse.unquote(stream_url)
 
-        # Stream the response in chunks
-        response = requests.get(original_url, stream=True)
+        # Make request with proper headers
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+
+        response = requests.get(original_url, stream=True, headers=headers)
+        response.raise_for_status()
 
         def generate():
-            for chunk in response.iter_content(chunk_size=8192):
-                yield chunk
+            try:
+                for chunk in response.iter_content(chunk_size=64*1024):  # Increased chunk size
+                    if chunk:
+                        yield chunk
+            except Exception as e:
+                print(f"Streaming error: {str(e)}")
+
+        # Copy important headers from original response
+        response_headers = {
+            'Access-Control-Allow-Origin': '*',
+            'Content-Type': response.headers.get('Content-Type', 'video/MP2T'),
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'Transfer-Encoding': 'chunked'
+        }
+
+        # Add Content-Length if available
+        if 'Content-Length' in response.headers:
+            response_headers['Content-Length'] = response.headers['Content-Length']
 
         return Response(
             generate(),
-            mimetype='video/MP2T',
-            headers={
-                'Access-Control-Allow-Origin': '*'
-            }
+            headers=response_headers,
+            direct_passthrough=True  # More efficient streaming
         )
     except Exception as e:
         print(f"Stream proxy error: {str(e)}")
