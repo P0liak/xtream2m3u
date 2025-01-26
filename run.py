@@ -1,6 +1,7 @@
 import json
 
 import requests
+from fake_useragent import UserAgent
 from flask import Flask, Response, request
 from requests.exceptions import SSLError
 
@@ -8,12 +9,20 @@ app = Flask(__name__)
 
 def curl_request(url):
     try:
-        response = requests.get(url)
+        ua = UserAgent()
+        headers = {
+            'User-Agent': ua.chrome,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
+        }
+        response = requests.get(url, headers=headers)
         response.raise_for_status()
         return response.text
     except SSLError:
         return None
-    except requests.RequestException:
+    except requests.RequestException as e:
+        print(f"RequestException: {e}")
         return None
 
 @app.route('/m3u', methods=['GET'])
