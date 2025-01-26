@@ -220,6 +220,31 @@ def generate_xmltv():
         headers={"Content-Disposition": "attachment; filename=guide.xml"}
     )
 
+@app.route('/stream-proxy/<path:stream_url>')
+def proxy_stream(stream_url):
+    """Proxy endpoint for streams"""
+    try:
+        # Decode the URL
+        original_url = urllib.parse.unquote(stream_url)
+
+        # Stream the response in chunks
+        response = requests.get(original_url, stream=True)
+
+        def generate():
+            for chunk in response.iter_content(chunk_size=8192):
+                yield chunk
+
+        return Response(
+            generate(),
+            mimetype='video/MP2T',
+            headers={
+                'Access-Control-Allow-Origin': '*'
+            }
+        )
+    except Exception as e:
+        print(f"Stream proxy error: {str(e)}")
+        return Response('', mimetype='video/MP2T')
+
 @app.route('/m3u', methods=['GET'])
 def generate_m3u():
     # Get parameters from the URL
@@ -227,6 +252,7 @@ def generate_m3u():
     username = request.args.get('username')
     password = request.args.get('password')
     unwanted_groups = request.args.get('unwanted_groups', '')
+    no_stream_proxy = request.args.get('nostreamproxy', '').lower() == 'true'
 
     if not url or not username or not password:
         return json.dumps({
@@ -318,8 +344,12 @@ def generate_m3u():
                 original_logo = channel.get('stream_icon', '')
                 logo_url = f"{host_url}/image-proxy/{encode_image_url(original_logo)}" if original_logo else ''
 
+                stream_url = f'{fullurl}{channel["stream_id"]}.ts'
+                if not no_stream_proxy:
+                    stream_url = f"{host_url}/stream-proxy/{encode_image_url(stream_url)}"
+
                 m3u_playlist += f'#EXTINF:0 tvg-name="{channel["name"]}" group-title="{group_title}" tvg-logo="{logo_url}",{channel["name"]}\n'
-                m3u_playlist += f'{fullurl}{channel["stream_id"]}.ts\n'
+                m3u_playlist += f'{stream_url}\n'
 
     # Return the M3U playlist as a downloadable file
     return Response(m3u_playlist, mimetype='audio/x-scpls', headers={"Content-Disposition": "attachment; filename=LiveStream.m3u"})
