@@ -20,10 +20,10 @@ def curl_request(url):
         response.raise_for_status()
         return response.text
     except SSLError:
-        return None
+        return {'error': 'SSL Error', 'details': 'Failed to verify SSL certificate'}, 503
     except requests.RequestException as e:
         print(f"RequestException: {e}")
-        return None
+        return {'error': 'Request Exception', 'details': str(e)}, 503
 
 @app.route('/m3u', methods=['GET'])
 def generate_m3u():
@@ -31,52 +31,76 @@ def generate_m3u():
     url = request.args.get('url')
     username = request.args.get('username')
     password = request.args.get('password')
-    unwanted_groups = request.args.get('unwanted_groups', '')  # This is a comma-separated list
+    unwanted_groups = request.args.get('unwanted_groups', '')
 
     if not url or not username or not password:
-        return "Missing url, username, or password", 400
+        return json.dumps({
+            'error': 'Missing Parameters',
+            'details': 'Required parameters: url, username, and password'
+        }), 400, {'Content-Type': 'application/json'}
 
     # Convert unwanted groups into a list
     unwanted_groups = [group.strip() for group in unwanted_groups.split(',')] if unwanted_groups else []
 
     # Verify the credentials and the provided URL
-    mainurl_json = curl_request(f'{url}/player_api.php?username={username}&password={password}')
-    if mainurl_json is None:
-        return "Unable to connect to the server. There might be an SSL certificate issue. Please check your URL and try again.", 503
+    mainurl_response = curl_request(f'{url}/player_api.php?username={username}&password={password}')
+    if isinstance(mainurl_response, tuple):  # Check if it's an error response
+        return json.dumps(mainurl_response[0]), mainurl_response[1], {'Content-Type': 'application/json'}
+    mainurl_json = mainurl_response
 
     try:
         mainurlraw = json.loads(mainurl_json)
-    except json.JSONDecodeError:
-        return "Invalid response data from the server", 500
+    except json.JSONDecodeError as e:
+        return json.dumps({
+            'error': 'Invalid JSON',
+            'details': f'Failed to parse server response: {str(e)}'
+        }), 500, {'Content-Type': 'application/json'}
 
     if 'user_info' not in mainurlraw or 'server_info' not in mainurlraw:
-        return "Invalid response data", 400
+        return json.dumps({
+            'error': 'Invalid Response',
+            'details': 'Server response missing required data (user_info or server_info)'
+        }), 400, {'Content-Type': 'application/json'}
 
     # Fetch live streams
-    livechannel_json = curl_request(f'{url}/player_api.php?username={username}&password={password}&action=get_live_streams')
-    if livechannel_json is None:
-        return "Failed to retrieve live streams. There might be a connection issue.", 503
+    livechannel_response = curl_request(f'{url}/player_api.php?username={username}&password={password}&action=get_live_streams')
+    if isinstance(livechannel_response, tuple):  # Check if it's an error response
+        return json.dumps(livechannel_response[0]), livechannel_response[1], {'Content-Type': 'application/json'}
+    livechannel_json = livechannel_response
 
     try:
         livechannelraw = json.loads(livechannel_json)
-    except json.JSONDecodeError:
-        return "Invalid live streams data from the server", 500
+    except json.JSONDecodeError as e:
+        return json.dumps({
+            'error': 'Invalid JSON',
+            'details': f'Failed to parse live streams data: {str(e)}'
+        }), 500, {'Content-Type': 'application/json'}
 
     if not isinstance(livechannelraw, list):
-        return "Invalid live streams data", 500
+        return json.dumps({
+            'error': 'Invalid Data Format',
+            'details': 'Live streams data is not in the expected format'
+        }), 500, {'Content-Type': 'application/json'}
 
     # Fetch live categories
-    category_json = curl_request(f'{url}/player_api.php?username={username}&password={password}&action=get_live_categories')
-    if category_json is None:
-        return "Failed to retrieve live categories. There might be a connection issue.", 503
+    category_response = curl_request(f'{url}/player_api.php?username={username}&password={password}&action=get_live_categories')
+    if isinstance(category_response, tuple):  # Check if it's an error response
+        return json.dumps(category_response[0]), category_response[1], {'Content-Type': 'application/json'}
+    category_json = category_response
 
     try:
         categoryraw = json.loads(category_json)
-    except json.JSONDecodeError:
-        return "Invalid live categories data from the server", 500
+    except json.JSONDecodeError as e:
+        return json.dumps({
+            'error': 'Invalid JSON',
+            'details': f'Failed to parse categories data: {str(e)}'
+        }), 500, {'Content-Type': 'application/json'}
 
     if not isinstance(categoryraw, list):
-        return "Invalid live categories data", 500
+        return json.dumps({
+            'error': 'Invalid Data Format',
+            'details': 'Categories data is not in the expected format'
+        }), 500, {'Content-Type': 'application/json'}
 
     username = mainurlraw['user_info']['username']
     password = mainurlraw['user_info']['password']
