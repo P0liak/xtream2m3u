@@ -1,10 +1,8 @@
 import json
 import logging
-import socket
 import urllib.parse
 
 import requests
-from dns.resolver import NXDOMAIN, NoAnswer, NoNameservers, Resolver, Timeout
 from fake_useragent import UserAgent
 from flask import Flask, Response, request
 from requests.exceptions import SSLError
@@ -14,36 +12,9 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-def resolve_dns(hostname):
-    # List of DNS servers to try
-    dns_servers = [
-        ['1.1.1.1', '1.0.0.1'],  # Cloudflare
-        ['8.8.8.8', '8.8.4.4'],  # Google
-        ['9.9.9.9', '149.112.112.112'],  # Quad9
-    ]
-
-    logger.info(f"Attempting to resolve hostname: {hostname}")
-
-    for servers in dns_servers:
-        try:
-            resolver = Resolver()
-            resolver.nameservers = servers
-            resolver.timeout = 2
-            resolver.lifetime = 4
-            answers = resolver.resolve(hostname, 'A')
-            ip = str(answers[0])
-            logger.info(f"Successfully resolved {hostname} to {ip} using {servers}")
-            return ip
-        except (NXDOMAIN, NoAnswer, NoNameservers, Timeout) as e:
-            logger.warning(f"Failed to resolve {hostname} using {servers}: {str(e)}")
-            continue
-
-    logger.error(f"All DNS resolution attempts failed for {hostname}")
-    return None
-
 def curl_request(url, binary=False):
     """
-    Make a request with DNS fallback and custom headers
+    Make a request with custom headers
     binary: If True, return raw bytes instead of text (for images)
     """
     try:
@@ -55,32 +26,6 @@ def curl_request(url, binary=False):
             'Connection': 'keep-alive',
         }
 
-        # Parse the URL to get the hostname
-        parsed_url = urllib.parse.urlparse(url)
-        hostname = parsed_url.hostname
-
-        # Try to resolve DNS first
-        if hostname:
-            ip = resolve_dns(hostname)
-            if ip:
-                # Reconstruct the URL with IP address
-                url_parts = list(parsed_url)
-                url_parts[1] = ip  # Replace hostname with IP
-                ip_url = urllib.parse.urlunparse(url_parts)
-
-                # Try with original URL first
-                try:
-                    response = requests.get(url, headers=headers)
-                    response.raise_for_status()
-                    return response.content if binary else response.text
-                except requests.RequestException:
-                    # If original URL fails, try with IP
-                    headers['Host'] = hostname  # Keep original hostname in Host header
-                    response = requests.get(ip_url, headers=headers)
-                    response.raise_for_status()
-                    return response.content if binary else response.text
-
-        # If DNS resolution fails or no hostname, try original URL
         response = requests.get(url, headers=headers)
         response.raise_for_status()
         return response.content if binary else response.text
@@ -105,26 +50,8 @@ def proxy_image(image_url):
         original_url = urllib.parse.unquote(image_url)
         logger.info(f"Image proxy request for: {original_url}")
 
-        # Parse URL and resolve DNS
-        parsed_url = urllib.parse.urlparse(original_url)
-        hostname = parsed_url.hostname
-        if hostname:
-            ip = resolve_dns(hostname)
-            if ip:
-                # Reconstruct URL with IP
-                url_parts = list(parsed_url)
-                url_parts[1] = ip
-                ip_url = urllib.parse.urlunparse(url_parts)
-                headers = {'Host': hostname}  # Keep original hostname
-            else:
-                ip_url = original_url
-                headers = {}
-        else:
-            ip_url = original_url
-            headers = {}
-
         # Make request with stream=True and timeout
-        response = requests.get(ip_url, stream=True, timeout=10, headers=headers)
+        response = requests.get(original_url, stream=True, timeout=10)
         response.raise_for_status()
 
         # Get content type from response
@@ -175,6 +102,81 @@ def proxy_image(image_url):
     except Exception as e:
         logger.error(f"Image proxy error: {str(e)}")
         return Response('Failed to process image', status=500)
+
+@app.route('/stream-proxy/<path:stream_url>')
+def proxy_stream(stream_url):
+    """Proxy endpoint for streams"""
+    try:
+        # Decode the URL
+        original_url = urllib.parse.unquote(stream_url)
+        logger.info(f"Stream proxy request for: {original_url}")
+
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+
+        # Add timeout to prevent hanging
+        response = requests.get(original_url, stream=True, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        logger.info(f"Stream response headers: {dict(response.headers)}")
+
+        # Get content type from response
+        content_type = response.headers.get('Content-Type')
+        if not content_type:
+            # Try to determine content type from URL
+            if original_url.endswith('.ts'):
+                content_type = 'video/MP2T'
+            elif original_url.endswith('.m3u8'):
+                content_type = 'application/vnd.apple.mpegurl'
+            else:
+                content_type = 'application/octet-stream'
+
+        logger.info(f"Using content type: {content_type}")
+
+        def generate():
+            try:
+                bytes_sent = 0
+                for chunk in response.iter_content(chunk_size=64*1024):
+                    if chunk:
+                        bytes_sent += len(chunk)
+                        yield chunk
+                logger.info(f"Stream completed, sent {bytes_sent} bytes")
+            except Exception as e:
+                logger.error(f"Streaming error in generator: {str(e)}")
+                raise
+
+        response_headers = {
+            'Access-Control-Allow-Origin': '*',
+            'Content-Type': content_type,
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive'
+        }
+
+        # Only add Content-Length if we have it and it's not chunked transfer
+        if ('Content-Length' in response.headers and
+            'Transfer-Encoding' not in response.headers):
+            response_headers['Content-Length'] = response.headers['Content-Length']
+        else:
+            response_headers['Transfer-Encoding'] = 'chunked'
+
+        logger.info(f"Sending response with headers: {response_headers}")
+
+        return Response(
+            generate(),
+            headers=response_headers,
+            direct_passthrough=True
+        )
+    except requests.Timeout:
+        logger.error(f"Timeout fetching stream: {original_url}")
+        return Response('Stream timeout', status=504)
+    except requests.HTTPError as e:
+        logger.error(f"HTTP error fetching stream: {str(e)}")
+        return Response(f'Failed to fetch stream: {str(e)}', status=e.response.status_code)
+    except Exception as e:
+        logger.error(f"Stream proxy error: {str(e)}")
+        return Response('Failed to process stream', status=500)
 
 @app.route('/xmltv', methods=['GET'])
 def generate_xmltv():
@@ -283,97 +285,6 @@ def generate_xmltv():
         mimetype='application/xml',
         headers={"Content-Disposition": "attachment; filename=guide.xml"}
     )
-
-@app.route('/stream-proxy/<path:stream_url>')
-def proxy_stream(stream_url):
-    """Proxy endpoint for streams"""
-    try:
-        # Decode the URL
-        original_url = urllib.parse.unquote(stream_url)
-        logger.info(f"Stream proxy request for: {original_url}")
-
-        # Parse URL and resolve DNS
-        parsed_url = urllib.parse.urlparse(original_url)
-        hostname = parsed_url.hostname
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-
-        if hostname:
-            ip = resolve_dns(hostname)
-            if ip:
-                # Reconstruct URL with IP
-                url_parts = list(parsed_url)
-                url_parts[1] = ip
-                ip_url = urllib.parse.urlunparse(url_parts)
-                headers['Host'] = hostname  # Keep original hostname
-            else:
-                ip_url = original_url
-        else:
-            ip_url = original_url
-
-        # Add timeout to prevent hanging
-        response = requests.get(ip_url, stream=True, headers=headers, timeout=10)
-        response.raise_for_status()
-
-        logger.info(f"Stream response headers: {dict(response.headers)}")
-
-        # Get content type from response
-        content_type = response.headers.get('Content-Type')
-        if not content_type:
-            # Try to determine content type from URL
-            if original_url.endswith('.ts'):
-                content_type = 'video/MP2T'
-            elif original_url.endswith('.m3u8'):
-                content_type = 'application/vnd.apple.mpegurl'
-            else:
-                content_type = 'application/octet-stream'
-
-        logger.info(f"Using content type: {content_type}")
-
-        def generate():
-            try:
-                bytes_sent = 0
-                for chunk in response.iter_content(chunk_size=64*1024):
-                    if chunk:
-                        bytes_sent += len(chunk)
-                        yield chunk
-                logger.info(f"Stream completed, sent {bytes_sent} bytes")
-            except Exception as e:
-                logger.error(f"Streaming error in generator: {str(e)}")
-                raise
-
-        response_headers = {
-            'Access-Control-Allow-Origin': '*',
-            'Content-Type': content_type,
-            'Accept-Ranges': 'bytes',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive'
-        }
-
-        # Only add Content-Length if we have it and it's not chunked transfer
-        if ('Content-Length' in response.headers and
-            'Transfer-Encoding' not in response.headers):
-            response_headers['Content-Length'] = response.headers['Content-Length']
-        else:
-            response_headers['Transfer-Encoding'] = 'chunked'
-
-        logger.info(f"Sending response with headers: {response_headers}")
-
-        return Response(
-            generate(),
-            headers=response_headers,
-            direct_passthrough=True
-        )
-    except requests.Timeout:
-        logger.error(f"Timeout fetching stream: {original_url}")
-        return Response('Stream timeout', status=504)
-    except requests.HTTPError as e:
-        logger.error(f"HTTP error fetching stream: {str(e)}")
-        return Response(f'Failed to fetch stream: {str(e)}', status=e.response.status_code)
-    except Exception as e:
-        logger.error(f"Stream proxy error: {str(e)}")
-        return Response('Failed to process stream', status=500)
 
 @app.route('/m3u', methods=['GET'])
 def generate_m3u():
