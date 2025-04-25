@@ -11,10 +11,4 @@ services:
       - FLASK_ENV=production
       - GUNICORN_CMD_ARGS="--workers=3"
       # - PROXY_URL=https://your-domain.com
-    dns:
-      - 1.1.1.1  # Cloudflare
-      - 1.0.0.1
-      - 8.8.8.8  # Google
-      - 8.8.4.4
-      - 9.9.9.9  # Quad9
     restart: unless-stopped

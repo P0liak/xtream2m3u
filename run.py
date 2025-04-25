@@ -1,107 +1,158 @@
+import ipaddress
 import json
 import logging
 import os
+import socket
 import urllib.parse
+from functools import lru_cache
 
+import dns.resolver
 import requests
 from fake_useragent import UserAgent
 from flask import Flask, Response, request
-from requests.exceptions import SSLError
 
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Get default proxy URL from environment variable or use the request host
-DEFAULT_PROXY_URL = os.environ.get('PROXY_URL', None)
+# Get default proxy URL from environment variable
+DEFAULT_PROXY_URL = os.environ.get('PROXY_URL')
 
-def curl_request(url, binary=False):
-    """
-    Make a request with custom headers
-    binary: If True, return raw bytes instead of text (for images)
-    """
+# Set up custom DNS resolver
+def setup_custom_dns():
+    """Configure a custom DNS resolver using reliable DNS services"""
+    dns_servers = ['1.1.1.1', '1.0.0.1', '8.8.8.8', '8.8.4.4', '9.9.9.9']
+
+    custom_resolver = dns.resolver.Resolver()
+    custom_resolver.nameservers = dns_servers
+
+    original_getaddrinfo = socket.getaddrinfo
+
+    def new_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        if host:
+            try:
+                # Skip DNS resolution for IP addresses
+                try:
+                    ipaddress.ip_address(host)
+                    # If we get here, the host is already an IP address
+                    logger.debug(f"Host is already an IP address: {host}, skipping DNS resolution")
+                except ValueError:
+                    # Not an IP address, so use DNS resolution
+                    answers = custom_resolver.resolve(host)
+                    host = str(answers[0])
+                    logger.debug(f"Custom DNS resolved {host}")
+            except Exception as e:
+                logger.info(f"Custom DNS resolution failed for {host}: {e}, falling back to system DNS")
+        return original_getaddrinfo(host, port, family, type, proto, flags)
+
+    socket.getaddrinfo = new_getaddrinfo
+    logger.info("Custom DNS resolver set up")
+
+# Initialize DNS resolver
+setup_custom_dns()
+
+# Common request function with caching for API endpoints
+@lru_cache(maxsize=128)
+def fetch_api_data(url, timeout=10):
+    """Make a request to an API endpoint with caching"""
+    ua = UserAgent()
+    headers = {
+        'User-Agent': ua.chrome,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Connection': 'keep-alive',
+    }
+
     try:
-        ua = UserAgent()
-        headers = {
-            'User-Agent': ua.chrome,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Connection': 'keep-alive',
-        }
+        hostname = urllib.parse.urlparse(url).netloc.split(':')[0]
+        logger.info(f"Making request to host: {hostname}")
 
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=timeout)
         response.raise_for_status()
-        return response.content if binary else response.text
 
-    except SSLError:
+        # Try to parse as JSON
+        try:
+            return json.loads(response.text)
+        except json.JSONDecodeError:
+            # Return text if not valid JSON
+            return response.text
+
+    except requests.exceptions.SSLError:
         return {'error': 'SSL Error', 'details': 'Failed to verify SSL certificate'}, 503
-    except requests.RequestException as e:
-        print(f"RequestException: {e}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"RequestException: {e}")
         return {'error': 'Request Exception', 'details': str(e)}, 503
 
-def encode_image_url(url):
-    """Encode the image URL to be used in the proxy endpoint"""
-    if not url:
-        return ''
-    return urllib.parse.quote(url, safe='')
+def stream_request(url, headers=None, timeout=10):
+    """Make a streaming request that doesn't buffer the full response"""
+    if not headers:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+
+    return requests.get(url, stream=True, headers=headers, timeout=timeout)
+
+def encode_url(url):
+    """Safely encode a URL for use in proxy endpoints"""
+    return urllib.parse.quote(url, safe='') if url else ''
+
+def generate_streaming_response(response, content_type=None):
+    """Generate a streaming response with appropriate headers"""
+    if not content_type:
+        content_type = response.headers.get('Content-Type', 'application/octet-stream')
+
+    def generate():
+        try:
+            bytes_sent = 0
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    bytes_sent += len(chunk)
+                    yield chunk
+            logger.info(f"Stream completed, sent {bytes_sent} bytes")
+        except Exception as e:
+            logger.error(f"Streaming error: {str(e)}")
+            raise
+
+    headers = {
+        'Access-Control-Allow-Origin': '*',
+        'Content-Type': content_type,
+    }
+
+    # Add content length if available and not using chunked transfer
+    if 'Content-Length' in response.headers and 'Transfer-Encoding' not in response.headers:
+        headers['Content-Length'] = response.headers['Content-Length']
+    else:
+        headers['Transfer-Encoding'] = 'chunked'
+
+    return Response(
+        generate(),
+        mimetype=content_type,
+        headers=headers,
+        direct_passthrough=True
+    )
 
 @app.route('/image-proxy/<path:image_url>')
 def proxy_image(image_url):
     """Proxy endpoint for images to avoid CORS issues"""
     try:
-        # Decode the URL
         original_url = urllib.parse.unquote(image_url)
         logger.info(f"Image proxy request for: {original_url}")
 
-        # Make request with stream=True and timeout
         response = requests.get(original_url, stream=True, timeout=10)
         response.raise_for_status()
 
-        # Get content type from response
         content_type = response.headers.get('Content-Type', '')
-        logger.info(f"Image response headers: {dict(response.headers)}")
 
         if not content_type.startswith('image/'):
             logger.error(f"Invalid content type for image: {content_type}")
             return Response('Invalid image type', status=415)
 
-        def generate():
-            try:
-                bytes_sent = 0
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        bytes_sent += len(chunk)
-                        yield chunk
-                logger.info(f"Image completed, sent {bytes_sent} bytes")
-            except Exception as e:
-                logger.error(f"Image streaming error in generator: {str(e)}")
-                raise
-
-        headers = {
-            'Cache-Control': 'public, max-age=31536000',
-            'Access-Control-Allow-Origin': '*',
-        }
-
-        # Only add Content-Length if we have it and it's not chunked transfer
-        if ('Content-Length' in response.headers and
-            'Transfer-Encoding' not in response.headers):
-            headers['Content-Length'] = response.headers['Content-Length']
-        else:
-            headers['Transfer-Encoding'] = 'chunked'
-
-        logger.info(f"Sending image response with headers: {headers}")
-
-        return Response(
-            generate(),
-            mimetype=content_type,
-            headers=headers
-        )
+        return generate_streaming_response(response, content_type)
     except requests.Timeout:
-        logger.error(f"Timeout fetching image: {original_url}")
         return Response('Image fetch timeout', status=504)
     except requests.HTTPError as e:
-        logger.error(f"HTTP error fetching image: {str(e)}")
         return Response(f'Failed to fetch image: {str(e)}', status=e.response.status_code)
     except Exception as e:
         logger.error(f"Image proxy error: {str(e)}")
@@ -111,24 +162,15 @@ def proxy_image(image_url):
 def proxy_stream(stream_url):
     """Proxy endpoint for streams"""
     try:
-        # Decode the URL
         original_url = urllib.parse.unquote(stream_url)
         logger.info(f"Stream proxy request for: {original_url}")
 
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-
-        # Add timeout to prevent hanging
-        response = requests.get(original_url, stream=True, headers=headers, timeout=10)
+        response = stream_request(original_url)
         response.raise_for_status()
 
-        logger.info(f"Stream response headers: {dict(response.headers)}")
-
-        # Get content type from response
+        # Determine content type
         content_type = response.headers.get('Content-Type')
         if not content_type:
-            # Try to determine content type from URL
             if original_url.endswith('.ts'):
                 content_type = 'video/MP2T'
             elif original_url.endswith('.m3u8'):
@@ -137,117 +179,136 @@ def proxy_stream(stream_url):
                 content_type = 'application/octet-stream'
 
         logger.info(f"Using content type: {content_type}")
-
-        def generate():
-            try:
-                bytes_sent = 0
-                for chunk in response.iter_content(chunk_size=64*1024):
-                    if chunk:
-                        bytes_sent += len(chunk)
-                        yield chunk
-                logger.info(f"Stream completed, sent {bytes_sent} bytes")
-            except Exception as e:
-                logger.error(f"Streaming error in generator: {str(e)}")
-                raise
-
-        response_headers = {
-            'Access-Control-Allow-Origin': '*',
-            'Content-Type': content_type,
-            'Accept-Ranges': 'bytes',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive'
-        }
-
-        # Only add Content-Length if we have it and it's not chunked transfer
-        if ('Content-Length' in response.headers and
-            'Transfer-Encoding' not in response.headers):
-            response_headers['Content-Length'] = response.headers['Content-Length']
-        else:
-            response_headers['Transfer-Encoding'] = 'chunked'
-
-        logger.info(f"Sending response with headers: {response_headers}")
-
-        return Response(
-            generate(),
-            headers=response_headers,
-            direct_passthrough=True
-        )
+        return generate_streaming_response(response, content_type)
     except requests.Timeout:
-        logger.error(f"Timeout fetching stream: {original_url}")
         return Response('Stream timeout', status=504)
     except requests.HTTPError as e:
-        logger.error(f"HTTP error fetching stream: {str(e)}")
         return Response(f'Failed to fetch stream: {str(e)}', status=e.response.status_code)
     except Exception as e:
         logger.error(f"Stream proxy error: {str(e)}")
         return Response('Failed to process stream', status=500)
 
-@app.route('/xmltv', methods=['GET'])
-def generate_xmltv():
-    # Get parameters from the URL
+def parse_group_list(group_string):
+    """Parse a comma-separated string into a list of trimmed strings"""
+    return [group.strip() for group in group_string.split(',')] if group_string else []
+
+def get_required_params():
+    """Get and validate the required parameters from the request"""
     url = request.args.get('url')
     username = request.args.get('username')
     password = request.args.get('password')
-    unwanted_groups = request.args.get('unwanted_groups', '')
-    wanted_groups = request.args.get('wanted_groups', '')
-    proxy_url = request.args.get('proxy_url', DEFAULT_PROXY_URL)
 
     if not url or not username or not password:
-        return json.dumps({
+        return None, None, None, json.dumps({
             'error': 'Missing Parameters',
             'details': 'Required parameters: url, username, and password'
-        }), 400, {'Content-Type': 'application/json'}
+        }), 400
 
-    # Convert groups into lists
-    unwanted_groups = [group.strip() for group in unwanted_groups.split(',')] if unwanted_groups else []
-    wanted_groups = [group.strip() for group in wanted_groups.split(',')] if wanted_groups else []
+    proxy_url = request.args.get('proxy_url', DEFAULT_PROXY_URL) or request.host_url.rstrip('/')
 
-    # Verify credentials first
-    mainurl_response = curl_request(f'{url}/player_api.php?username={username}&password={password}')
-    if isinstance(mainurl_response, tuple):
-        return json.dumps(mainurl_response[0]), mainurl_response[1], {'Content-Type': 'application/json'}
+    return url, username, password, proxy_url, None
 
-    # If credentials are valid, fetch the XMLTV data directly
-    base_url = url.rstrip('/')  # Remove trailing slash if present
-    xmltv_response = curl_request(f'{base_url}/xmltv.php?username={username}&password={password}')
+def validate_xtream_credentials(url, username, password):
+    """Validate the Xtream API credentials"""
+    api_url = f'{url}/player_api.php?username={username}&password={password}'
+    data = fetch_api_data(api_url)
 
-    # Get the current host URL for the proxy
-    host_url = proxy_url or request.host_url.rstrip('/')
+    if isinstance(data, tuple):  # Error response
+        return None, data[0], data[1]
 
-    if isinstance(xmltv_response, tuple):  # Check if it's an error response
-        return json.dumps(xmltv_response[0]), xmltv_response[1], {'Content-Type': 'application/json'}
+    if 'user_info' not in data or 'server_info' not in data:
+        return None, json.dumps({
+            'error': 'Invalid Response',
+            'details': 'Server response missing required data (user_info or server_info)'
+        }), 400
+
+    return data, None, None
+
+def fetch_categories_and_channels(url, username, password):
+    """Fetch categories and channels from the Xtream API"""
+    # Fetch categories
+    category_url = f'{url}/player_api.php?username={username}&password={password}&action=get_live_categories'
+    categories = fetch_api_data(category_url)
+
+    if isinstance(categories, tuple):  # Error response
+        return None, None, categories[0], categories[1]
+
+    # Fetch live channels
+    channel_url = f'{url}/player_api.php?username={username}&password={password}&action=get_live_streams'
+    channels = fetch_api_data(channel_url)
+
+    if isinstance(channels, tuple):  # Error response
+        return None, None, channels[0], channels[1]
+
+    if not isinstance(categories, list) or not isinstance(channels, list):
+        return None, None, json.dumps({
+            'error': 'Invalid Data Format',
+            'details': 'Categories or channels data is not in the expected format'
+        }), 500
+
+    return categories, channels, None, None
+
+@app.route('/xmltv', methods=['GET'])
+def generate_xmltv():
+    """Generate a filtered XMLTV file from the Xtream API"""
+    # Get and validate parameters
+    url, username, password, proxy_url, error = get_required_params()
+    if error:
+        return error
+
+    # Parse filter parameters
+    unwanted_groups = parse_group_list(request.args.get('unwanted_groups', ''))
+    wanted_groups = parse_group_list(request.args.get('wanted_groups', ''))
+
+    # Validate credentials
+    user_data, error_json, error_code = validate_xtream_credentials(url, username, password)
+    if error_json:
+        return error_json, error_code, {'Content-Type': 'application/json'}
+
+    # Fetch XMLTV data
+    base_url = url.rstrip('/')
+    xmltv_url = f'{base_url}/xmltv.php?username={username}&password={password}'
+    xmltv_data = fetch_api_data(xmltv_url, timeout=20)  # Longer timeout for XMLTV
+
+    if isinstance(xmltv_data, tuple):  # Error response
+        return json.dumps(xmltv_data[0]), xmltv_data[1], {'Content-Type': 'application/json'}
+
+    # If not filtering or proxying, return the original XMLTV
+    if not (unwanted_groups or wanted_groups) and not proxy_url:
+        return Response(
+            xmltv_data,
+            mimetype='application/xml',
+            headers={"Content-Disposition": "attachment; filename=guide.xml"}
+        )
 
     # Replace image URLs in the XMLTV content
-    if not isinstance(xmltv_response, tuple):
+    if proxy_url:
         import re
 
         def replace_icon_url(match):
             original_url = match.group(1)
-            proxied_url = f"{host_url}/image-proxy/{encode_image_url(original_url)}"
+            proxied_url = f"{proxy_url}/image-proxy/{encode_url(original_url)}"
             return f'<icon src="{proxied_url}"'
 
-        # Replace icon URLs in the XML
-        xmltv_response = re.sub(
+        xmltv_data = re.sub(
             r'<icon src="([^"]+)"',
             replace_icon_url,
-            xmltv_response
+            xmltv_data
         )
 
-    # If unwanted_groups or wanted_groups is specified, we need to filter the XML
+    # If filtering is enabled, filter the XML
     if unwanted_groups or wanted_groups:
         try:
-            # Fetch categories and channels to get the mapping
-            category_response = curl_request(f'{url}/player_api.php?username={username}&password={password}&action=get_live_categories')
-            livechannel_response = curl_request(f'{url}/player_api.php?username={username}&password={password}&action=get_live_streams')
-
-            if not isinstance(category_response, tuple) and not isinstance(livechannel_response, tuple):
-                categories = json.loads(category_response)
-                channels = json.loads(livechannel_response)
-
+            # Fetch categories and channels for filtering
+            categories, channels, error_json, error_code = fetch_categories_and_channels(url, username, password)
+            if error_json:
+                # If we can't get filtering data, just return the unfiltered XMLTV
+                logger.warning("Could not fetch filtering data, returning unfiltered XMLTV")
+            else:
                 # Create category mapping
                 category_names = {cat['category_id']: cat['category_name'] for cat in categories}
 
-                # Create set of channel IDs to exclude or include
+                # Create set of channel IDs to exclude
                 excluded_channels = set()
 
                 for channel in channels:
@@ -269,7 +330,7 @@ def generate_xmltv():
                     current_channel = None
                     skip_current = False
 
-                    for line in xmltv_response.split('\n'):
+                    for line in xmltv_data.split('\n'):
                         if '<channel id="' in line:
                             current_channel = line.split('"')[1]
                             skip_current = current_channel in excluded_channels
@@ -285,118 +346,59 @@ def generate_xmltv():
                         if '</channel>' in line or '</programme>' in line:
                             skip_current = False
 
-                    xmltv_response = '\n'.join(filtered_lines)
-
-        except (json.JSONDecodeError, IndexError, KeyError):
+                    xmltv_data = '\n'.join(filtered_lines)
+        except Exception as e:
+            logger.error(f"Failed to filter XMLTV: {e}")
             # If filtering fails, return unfiltered XMLTV
-            pass
 
-    # Return the modified XMLTV data
+    # Return the XMLTV data
     return Response(
-        xmltv_response,
+        xmltv_data,
         mimetype='application/xml',
         headers={"Content-Disposition": "attachment; filename=guide.xml"}
     )
 
 @app.route('/m3u', methods=['GET'])
 def generate_m3u():
-    # Get parameters from the URL
-    url = request.args.get('url')
-    username = request.args.get('username')
-    password = request.args.get('password')
-    unwanted_groups = request.args.get('unwanted_groups', '')
-    wanted_groups = request.args.get('wanted_groups', '')
+    """Generate a filtered M3U playlist from the Xtream API"""
+    # Get and validate parameters
+    url, username, password, proxy_url, error = get_required_params()
+    if error:
+        return error
+
+    # Parse filter parameters
+    unwanted_groups = parse_group_list(request.args.get('unwanted_groups', ''))
+    wanted_groups = parse_group_list(request.args.get('wanted_groups', ''))
     no_stream_proxy = request.args.get('nostreamproxy', '').lower() == 'true'
-    proxy_url = request.args.get('proxy_url', DEFAULT_PROXY_URL)
 
-    if not url or not username or not password:
-        return json.dumps({
-            'error': 'Missing Parameters',
-            'details': 'Required parameters: url, username, and password'
-        }), 400, {'Content-Type': 'application/json'}
+    # Validate credentials
+    user_data, error_json, error_code = validate_xtream_credentials(url, username, password)
+    if error_json:
+        return error_json, error_code, {'Content-Type': 'application/json'}
 
-    # Convert groups into lists
-    unwanted_groups = [group.strip() for group in unwanted_groups.split(',')] if unwanted_groups else []
-    wanted_groups = [group.strip() for group in wanted_groups.split(',')] if wanted_groups else []
+    # Fetch categories and channels
+    categories, channels, error_json, error_code = fetch_categories_and_channels(url, username, password)
+    if error_json:
+        return error_json, error_code, {'Content-Type': 'application/json'}
 
-    # Verify the credentials and the provided URL
-    mainurl_response = curl_request(f'{url}/player_api.php?username={username}&password={password}')
-    if isinstance(mainurl_response, tuple):  # Check if it's an error response
-        return json.dumps(mainurl_response[0]), mainurl_response[1], {'Content-Type': 'application/json'}
-    mainurl_json = mainurl_response
+    # Extract user info and server URL
+    username = user_data['user_info']['username']
+    password = user_data['user_info']['password']
 
-    try:
-        mainurlraw = json.loads(mainurl_json)
-    except json.JSONDecodeError as e:
-        return json.dumps({
-            'error': 'Invalid JSON',
-            'details': f'Failed to parse server response: {str(e)}'
-        }), 500, {'Content-Type': 'application/json'}
+    server_url = f"http://{user_data['server_info']['url']}:{user_data['server_info']['port']}"
+    stream_base_url = f"{server_url}/live/{username}/{password}/"
 
-    if 'user_info' not in mainurlraw or 'server_info' not in mainurlraw:
-        return json.dumps({
-            'error': 'Invalid Response',
-            'details': 'Server response missing required data (user_info or server_info)'
-        }), 400, {'Content-Type': 'application/json'}
-
-    # Fetch live streams
-    livechannel_response = curl_request(f'{url}/player_api.php?username={username}&password={password}&action=get_live_streams')
-    if isinstance(livechannel_response, tuple):  # Check if it's an error response
-        return json.dumps(livechannel_response[0]), livechannel_response[1], {'Content-Type': 'application/json'}
-    livechannel_json = livechannel_response
-
-    try:
-        livechannelraw = json.loads(livechannel_json)
-    except json.JSONDecodeError as e:
-        return json.dumps({
-            'error': 'Invalid JSON',
-            'details': f'Failed to parse live streams data: {str(e)}'
-        }), 500, {'Content-Type': 'application/json'}
-
-    if not isinstance(livechannelraw, list):
-        return json.dumps({
-            'error': 'Invalid Data Format',
-            'details': 'Live streams data is not in the expected format'
-        }), 500, {'Content-Type': 'application/json'}
-
-    # Fetch live categories
-    category_response = curl_request(f'{url}/player_api.php?username={username}&password={password}&action=get_live_categories')
-    if isinstance(category_response, tuple):  # Check if it's an error response
-        return json.dumps(category_response[0]), category_response[1], {'Content-Type': 'application/json'}
-    category_json = category_response
-
-    try:
-        categoryraw = json.loads(category_json)
-    except json.JSONDecodeError as e:
-        return json.dumps({
-            'error': 'Invalid JSON',
-            'details': f'Failed to parse categories data: {str(e)}'
-        }), 500, {'Content-Type': 'application/json'}
-
-    if not isinstance(categoryraw, list):
-        return json.dumps({
-            'error': 'Invalid Data Format',
-            'details': 'Categories data is not in the expected format'
-        }), 500, {'Content-Type': 'application/json'}
-
-    username = mainurlraw['user_info']['username']
-    password = mainurlraw['user_info']['password']
-
-    server_url = f"http://{mainurlraw['server_info']['url']}:{mainurlraw['server_info']['port']}"
-    fullurl = f"{server_url}/live/{username}/{password}/"
-
-    categoryname = {cat['category_id']: cat['category_name'] for cat in categoryraw}
-
-    # Get the current host URL for the proxy
-    host_url = proxy_url or request.host_url.rstrip('/')
+    # Create category name lookup
+    category_names = {cat['category_id']: cat['category_name'] for cat in categories}
 
     # Generate M3U playlist
     m3u_playlist = "#EXTM3U\n"
-    for channel in livechannelraw:
-        if channel['stream_type'] == 'live':
-            group_title = categoryname.get(channel["category_id"], "Uncategorized")
 
-            # Handle filtering - if wanted_groups is provided, it takes precedence over unwanted_groups
+    for channel in channels:
+        if channel['stream_type'] == 'live':
+            group_title = category_names.get(channel["category_id"], "Uncategorized")
+
+            # Handle filtering logic
             include_channel = True
 
             if wanted_groups:
@@ -407,19 +409,25 @@ def generate_m3u():
                 include_channel = not any(unwanted_group.lower() in group_title.lower() for unwanted_group in unwanted_groups)
 
             if include_channel:
-                # Proxy the logo URL
+                # Proxy the logo URL if available
                 original_logo = channel.get('stream_icon', '')
-                logo_url = f"{host_url}/image-proxy/{encode_image_url(original_logo)}" if original_logo else ''
+                logo_url = f"{proxy_url}/image-proxy/{encode_url(original_logo)}" if original_logo else ''
 
-                stream_url = f'{fullurl}{channel["stream_id"]}.ts'
+                # Create the stream URL with or without proxying
+                stream_url = f'{stream_base_url}{channel["stream_id"]}.ts'
                 if not no_stream_proxy:
-                    stream_url = f"{host_url}/stream-proxy/{encode_image_url(stream_url)}"
+                    stream_url = f"{proxy_url}/stream-proxy/{encode_url(stream_url)}"
 
+                # Add channel to playlist
                 m3u_playlist += f'#EXTINF:0 tvg-name="{channel["name"]}" group-title="{group_title}" tvg-logo="{logo_url}",{channel["name"]}\n'
                 m3u_playlist += f'{stream_url}\n'
 
-    # Return the M3U playlist as a downloadable file
-    return Response(m3u_playlist, mimetype='audio/x-scpls', headers={"Content-Disposition": "attachment; filename=LiveStream.m3u"})
+    # Return the M3U playlist
+    return Response(
+        m3u_playlist,
+        mimetype='audio/x-scpls',
+        headers={"Content-Disposition": "attachment; filename=LiveStream.m3u"}
+    )
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0')
