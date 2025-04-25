@@ -54,6 +54,12 @@ For deployment, you'll need one of the following:
 - Docker and Docker Compose
 - Python 3.12 or higher
 
+## Environment Variables
+
+The application supports the following environment variables:
+
+- `PROXY_URL`: [Optional] Set a default custom base URL for all proxied content (can be overridden with the `proxy_url` parameter)
+
 ## Installation
 
 ### Using Docker (Recommended)
@@ -111,6 +117,7 @@ GET /m3u
 - `unwanted_groups` (optional): A comma-separated list of group names to exclude
 - `wanted_groups` (optional): A comma-separated list of group names to include (takes precedence over unwanted_groups)
 - `nostreamproxy` (optional): Set to 'true' to disable stream proxying
+- `proxy_url` (optional): Custom base URL for proxied content (overrides auto-detection)
 
 ##### Example Request
 
@@ -122,6 +129,12 @@ Or to only include specific groups:
 
 ```
 http://localhost:5000/m3u?url=http://your-iptv-service.com&username=your_username&password=your_password&wanted_groups=movies,series
+```
+
+With a custom proxy URL:
+
+```
+http://localhost:5000/m3u?url=http://your-iptv-service.com&username=your_username&password=your_password&proxy_url=https://your-public-domain.com
 ```
 
 #### XMLTV Guide Generation
@@ -137,6 +150,7 @@ GET /xmltv
 - `password` (required): Your IPTV service password
 - `unwanted_groups` (optional): A comma-separated list of group names to exclude
 - `wanted_groups` (optional): A comma-separated list of group names to include (takes precedence over unwanted_groups)
+- `proxy_url` (optional): Custom base URL for proxied content (overrides auto-detection)
 
 ##### Example Request
 

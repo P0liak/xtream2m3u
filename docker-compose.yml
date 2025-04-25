@@ -2,14 +2,15 @@ services:
   xtream2m3u:
     image: ghcr.io/ovosimpatico/xtream2m3u:latest
     # build:
-    #   context: .
-    #   dockerfile: Dockerfile
+      # context: .
+      # dockerfile: Dockerfile
     container_name: xtream2m3u
     ports:
       - "5000:5000"
     environment:
       - FLASK_ENV=production
       - GUNICORN_CMD_ARGS="--workers=3"
+      # - PROXY_URL=https://your-domain.com
     dns:
       - 1.1.1.1  # Cloudflare
       - 1.0.0.1

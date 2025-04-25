@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import urllib.parse
 
 import requests
@@ -11,6 +12,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+# Get default proxy URL from environment variable or use the request host
+DEFAULT_PROXY_URL = os.environ.get('PROXY_URL', None)
 
 def curl_request(url, binary=False):
     """
@@ -186,6 +190,7 @@ def generate_xmltv():
     password = request.args.get('password')
     unwanted_groups = request.args.get('unwanted_groups', '')
     wanted_groups = request.args.get('wanted_groups', '')
+    proxy_url = request.args.get('proxy_url', DEFAULT_PROXY_URL)
 
     if not url or not username or not password:
         return json.dumps({
@@ -207,7 +212,7 @@ def generate_xmltv():
     xmltv_response = curl_request(f'{base_url}/xmltv.php?username={username}&password={password}')
 
     # Get the current host URL for the proxy
-    host_url = request.host_url.rstrip('/')
+    host_url = proxy_url or request.host_url.rstrip('/')
 
     if isinstance(xmltv_response, tuple):  # Check if it's an error response
         return json.dumps(xmltv_response[0]), xmltv_response[1], {'Content-Type': 'application/json'}
@@ -302,6 +307,7 @@ def generate_m3u():
     unwanted_groups = request.args.get('unwanted_groups', '')
     wanted_groups = request.args.get('wanted_groups', '')
     no_stream_proxy = request.args.get('nostreamproxy', '').lower() == 'true'
+    proxy_url = request.args.get('proxy_url', DEFAULT_PROXY_URL)
 
     if not url or not username or not password:
         return json.dumps({
@@ -382,7 +388,7 @@ def generate_m3u():
     categoryname = {cat['category_id']: cat['category_name'] for cat in categoryraw}
 
     # Get the current host URL for the proxy
-    host_url = request.host_url.rstrip('/')
+    host_url = proxy_url or request.host_url.rstrip('/')
 
     # Generate M3U playlist
     m3u_playlist = "#EXTM3U\n"
