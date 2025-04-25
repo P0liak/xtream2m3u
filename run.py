@@ -185,6 +185,7 @@ def generate_xmltv():
     username = request.args.get('username')
     password = request.args.get('password')
     unwanted_groups = request.args.get('unwanted_groups', '')
+    wanted_groups = request.args.get('wanted_groups', '')
 
     if not url or not username or not password:
         return json.dumps({
@@ -192,8 +193,9 @@ def generate_xmltv():
             'details': 'Required parameters: url, username, and password'
         }), 400, {'Content-Type': 'application/json'}
 
-    # Convert unwanted groups into a list
+    # Convert groups into lists
     unwanted_groups = [group.strip() for group in unwanted_groups.split(',')] if unwanted_groups else []
+    wanted_groups = [group.strip() for group in wanted_groups.split(',')] if wanted_groups else []
 
     # Verify credentials first
     mainurl_response = curl_request(f'{url}/player_api.php?username={username}&password={password}')
@@ -226,8 +228,8 @@ def generate_xmltv():
             xmltv_response
         )
 
-    # If unwanted_groups is specified, we need to filter the XML
-    if unwanted_groups:
+    # If unwanted_groups or wanted_groups is specified, we need to filter the XML
+    if unwanted_groups or wanted_groups:
         try:
             # Fetch categories and channels to get the mapping
             category_response = curl_request(f'{url}/player_api.php?username={username}&password={password}&action=get_live_categories')
@@ -240,16 +242,21 @@ def generate_xmltv():
                 # Create category mapping
                 category_names = {cat['category_id']: cat['category_name'] for cat in categories}
 
-                # Create set of channel IDs to exclude
-                excluded_channels = {
-                    str(channel['stream_id'])
-                    for channel in channels
-                    if channel['stream_type'] == 'live'
-                    and any(
-                        unwanted_group.lower() in category_names.get(channel['category_id'], '').lower()
-                        for unwanted_group in unwanted_groups
-                    )
-                }
+                # Create set of channel IDs to exclude or include
+                excluded_channels = set()
+
+                for channel in channels:
+                    if channel['stream_type'] == 'live':
+                        group_title = category_names.get(channel['category_id'], '')
+
+                        if wanted_groups:
+                            # If wanted_groups is specified, exclude channels NOT in wanted groups
+                            if not any(wanted_group.lower() in group_title.lower() for wanted_group in wanted_groups):
+                                excluded_channels.add(str(channel['stream_id']))
+                        elif unwanted_groups:
+                            # Otherwise use unwanted_groups filtering
+                            if any(unwanted_group.lower() in group_title.lower() for unwanted_group in unwanted_groups):
+                                excluded_channels.add(str(channel['stream_id']))
 
                 if excluded_channels:
                     # Simple XML filtering using string operations
@@ -293,6 +300,7 @@ def generate_m3u():
     username = request.args.get('username')
     password = request.args.get('password')
     unwanted_groups = request.args.get('unwanted_groups', '')
+    wanted_groups = request.args.get('wanted_groups', '')
     no_stream_proxy = request.args.get('nostreamproxy', '').lower() == 'true'
 
     if not url or not username or not password:
@@ -301,8 +309,9 @@ def generate_m3u():
             'details': 'Required parameters: url, username, and password'
         }), 400, {'Content-Type': 'application/json'}
 
-    # Convert unwanted groups into a list
+    # Convert groups into lists
     unwanted_groups = [group.strip() for group in unwanted_groups.split(',')] if unwanted_groups else []
+    wanted_groups = [group.strip() for group in wanted_groups.split(',')] if wanted_groups else []
 
     # Verify the credentials and the provided URL
     mainurl_response = curl_request(f'{url}/player_api.php?username={username}&password={password}')
@@ -380,7 +389,18 @@ def generate_m3u():
     for channel in livechannelraw:
         if channel['stream_type'] == 'live':
             group_title = categoryname.get(channel["category_id"], "Uncategorized")
-            if not any(unwanted_group.lower() in group_title.lower() for unwanted_group in unwanted_groups):
+
+            # Handle filtering - if wanted_groups is provided, it takes precedence over unwanted_groups
+            include_channel = True
+
+            if wanted_groups:
+                # Only include channels from specified groups
+                include_channel = any(wanted_group.lower() in group_title.lower() for wanted_group in wanted_groups)
+            elif unwanted_groups:
+                # Exclude channels from unwanted groups
+                include_channel = not any(unwanted_group.lower() in group_title.lower() for unwanted_group in unwanted_groups)
+
+            if include_channel:
                 # Proxy the logo URL
                 original_logo = channel.get('stream_icon', '')
                 logo_url = f"{host_url}/image-proxy/{encode_image_url(original_logo)}" if original_logo else ''

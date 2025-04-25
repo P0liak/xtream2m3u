@@ -1,6 +1,9 @@
 services:
   xtream2m3u:
     image: ghcr.io/ovosimpatico/xtream2m3u:latest
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
     container_name: xtream2m3u
     ports:
       - "5000:5000"

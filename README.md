@@ -40,7 +40,7 @@ Many IPTV providers use the Xtream API, which isn't directly compatible with med
 
 1. Connecting to Xtream API-based IPTV services
 2. Fetching the list of available live streams
-3. Allowing users to filter out unwanted channel groups
+3. Allowing users to filter channels by including only wanted groups or excluding unwanted groups
 4. Generating a standard M3U playlist that's compatible with a wide range of media players
 
 ## Prerequisites
@@ -109,12 +109,19 @@ GET /m3u
 - `username` (required): Your IPTV service username
 - `password` (required): Your IPTV service password
 - `unwanted_groups` (optional): A comma-separated list of group names to exclude
+- `wanted_groups` (optional): A comma-separated list of group names to include (takes precedence over unwanted_groups)
 - `nostreamproxy` (optional): Set to 'true' to disable stream proxying
 
 ##### Example Request
 
 ```
 http://localhost:5000/m3u?url=http://your-iptv-service.com&username=your_username&password=your_password&unwanted_groups=news,sports
+```
+
+Or to only include specific groups:
+
+```
+http://localhost:5000/m3u?url=http://your-iptv-service.com&username=your_username&password=your_password&wanted_groups=movies,series
 ```
 
 #### XMLTV Guide Generation
@@ -129,11 +136,18 @@ GET /xmltv
 - `username` (required): Your IPTV service username
 - `password` (required): Your IPTV service password
 - `unwanted_groups` (optional): A comma-separated list of group names to exclude
+- `wanted_groups` (optional): A comma-separated list of group names to include (takes precedence over unwanted_groups)
 
 ##### Example Request
 
 ```
 http://localhost:5000/xmltv?url=http://your-iptv-service.com&username=your_username&password=your_password&unwanted_groups=news,sports
+```
+
+Or to only include specific groups:
+
+```
+http://localhost:5000/xmltv?url=http://your-iptv-service.com&username=your_username&password=your_password&wanted_groups=movies,series
 ```
 
 #### Image Proxy
