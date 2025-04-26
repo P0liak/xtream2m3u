@@ -119,6 +119,11 @@ GET /m3u
 - `nostreamproxy` (optional): Set to 'true' to disable stream proxying
 - `proxy_url` (optional): Custom base URL for proxied content (overrides auto-detection)
 
+Note: For `unwanted_groups` and `wanted_groups`, you can use wildcard patterns with `*` and `?` characters. For example:
+- `US*` will match all groups starting with "US"
+- `*Sports*` will match any group containing "Sports"
+- `US| ?/?/?` will match groups like "US| 24/7"
+
 ##### Example Request
 
 ```
@@ -151,6 +156,8 @@ GET /xmltv
 - `unwanted_groups` (optional): A comma-separated list of group names to exclude
 - `wanted_groups` (optional): A comma-separated list of group names to include (takes precedence over unwanted_groups)
 - `proxy_url` (optional): Custom base URL for proxied content (overrides auto-detection)
+
+Note: Wildcard patterns are also supported for group filtering in the XMLTV endpoint, just like for the M3U endpoint.
 
 ##### Example Request
 

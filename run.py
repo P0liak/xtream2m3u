@@ -1,7 +1,9 @@
+import fnmatch
 import ipaddress
 import json
 import logging
 import os
+import re
 import socket
 import urllib.parse
 from functools import lru_cache
@@ -192,6 +194,19 @@ def parse_group_list(group_string):
     """Parse a comma-separated string into a list of trimmed strings"""
     return [group.strip() for group in group_string.split(',')] if group_string else []
 
+def group_matches(group_title, pattern):
+    """Check if a group title matches a pattern, supporting wildcards and exact matching"""
+    # Convert to lowercase for case-insensitive matching
+    group_lower = group_title.lower()
+    pattern_lower = pattern.lower()
+
+    # Check for wildcard patterns
+    if '*' in pattern_lower or '?' in pattern_lower:
+        return fnmatch.fnmatch(group_lower, pattern_lower)
+    else:
+        # Simple substring match for non-wildcard patterns
+        return pattern_lower in group_lower
+
 def get_required_params():
     """Get and validate the required parameters from the request"""
     url = request.args.get('url')
@@ -283,8 +298,6 @@ def generate_xmltv():
 
     # Replace image URLs in the XMLTV content
     if proxy_url:
-        import re
-
         def replace_icon_url(match):
             original_url = match.group(1)
             proxied_url = f"{proxy_url}/image-proxy/{encode_url(original_url)}"
@@ -317,11 +330,11 @@ def generate_xmltv():
 
                         if wanted_groups:
                             # If wanted_groups is specified, exclude channels NOT in wanted groups
-                            if not any(wanted_group.lower() in group_title.lower() for wanted_group in wanted_groups):
+                            if not any(group_matches(group_title, wanted_group) for wanted_group in wanted_groups):
                                 excluded_channels.add(str(channel['stream_id']))
                         elif unwanted_groups:
                             # Otherwise use unwanted_groups filtering
-                            if any(unwanted_group.lower() in group_title.lower() for unwanted_group in unwanted_groups):
+                            if any(group_matches(group_title, unwanted_group) for unwanted_group in unwanted_groups):
                                 excluded_channels.add(str(channel['stream_id']))
 
                 if excluded_channels:
@@ -403,10 +416,10 @@ def generate_m3u():
 
             if wanted_groups:
                 # Only include channels from specified groups
-                include_channel = any(wanted_group.lower() in group_title.lower() for wanted_group in wanted_groups)
+                include_channel = any(group_matches(group_title, wanted_group) for wanted_group in wanted_groups)
             elif unwanted_groups:
                 # Exclude channels from unwanted groups
-                include_channel = not any(unwanted_group.lower() in group_title.lower() for unwanted_group in unwanted_groups)
+                include_channel = not any(group_matches(group_title, unwanted_group) for unwanted_group in unwanted_groups)
 
             if include_channel:
                 # Proxy the logo URL if available
