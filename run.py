@@ -14,7 +14,7 @@ from fake_useragent import UserAgent
 from flask import Flask, Response, request
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -200,6 +200,28 @@ def group_matches(group_title, pattern):
     group_lower = group_title.lower()
     pattern_lower = pattern.lower()
 
+    # Handle spaces in pattern
+    if ' ' in pattern_lower:
+        # For patterns with spaces, split and check each part
+        pattern_parts = pattern_lower.split()
+        group_parts = group_lower.split()
+
+        # If pattern has more parts than group, can't match
+        if len(pattern_parts) > len(group_parts):
+            return False
+
+        # Check each part of the pattern against group parts
+        for i, part in enumerate(pattern_parts):
+            if i >= len(group_parts):
+                return False
+            if '*' in part or '?' in part:
+                if not fnmatch.fnmatch(group_parts[i], part):
+                    return False
+            else:
+                if part not in group_parts[i]:
+                    return False
+        return True
+
     # Check for wildcard patterns
     if '*' in pattern_lower or '?' in pattern_lower:
         return fnmatch.fnmatch(group_lower, pattern_lower)
@@ -275,6 +297,9 @@ def generate_xmltv():
     unwanted_groups = parse_group_list(request.args.get('unwanted_groups', ''))
     wanted_groups = parse_group_list(request.args.get('wanted_groups', ''))
 
+    # Log filter parameters
+    logger.info(f"Filter parameters - wanted_groups: {wanted_groups}, unwanted_groups: {unwanted_groups}")
+
     # Validate credentials
     user_data, error_json, error_code = validate_xtream_credentials(url, username, password)
     if error_json:
@@ -321,8 +346,13 @@ def generate_xmltv():
                 # Create category mapping
                 category_names = {cat['category_id']: cat['category_name'] for cat in categories}
 
+                # Log all available groups
+                all_groups = set(category_names.values())
+                logger.info(f"All available groups: {sorted(all_groups)}")
+
                 # Create set of channel IDs to exclude
                 excluded_channels = set()
+                included_groups = set()
 
                 for channel in channels:
                     if channel['stream_type'] == 'live':
@@ -332,10 +362,18 @@ def generate_xmltv():
                             # If wanted_groups is specified, exclude channels NOT in wanted groups
                             if not any(group_matches(group_title, wanted_group) for wanted_group in wanted_groups):
                                 excluded_channels.add(str(channel['stream_id']))
+                            else:
+                                included_groups.add(group_title)
                         elif unwanted_groups:
                             # Otherwise use unwanted_groups filtering
                             if any(group_matches(group_title, unwanted_group) for unwanted_group in unwanted_groups):
                                 excluded_channels.add(str(channel['stream_id']))
+                            else:
+                                included_groups.add(group_title)
+
+                # Log included and excluded groups
+                logger.info(f"Groups included after filtering: {sorted(included_groups)}")
+                logger.info(f"Groups excluded after filtering: {sorted(all_groups - included_groups)}")
 
                 if excluded_channels:
                     # Simple XML filtering using string operations
@@ -384,6 +422,9 @@ def generate_m3u():
     wanted_groups = parse_group_list(request.args.get('wanted_groups', ''))
     no_stream_proxy = request.args.get('nostreamproxy', '').lower() == 'true'
 
+    # Log filter parameters
+    logger.info(f"Filter parameters - wanted_groups: {wanted_groups}, unwanted_groups: {unwanted_groups}")
+
     # Validate credentials
     user_data, error_json, error_code = validate_xtream_credentials(url, username, password)
     if error_json:
@@ -404,8 +445,15 @@ def generate_m3u():
     # Create category name lookup
     category_names = {cat['category_id']: cat['category_name'] for cat in categories}
 
+    # Log all available groups
+    all_groups = set(category_names.values())
+    logger.info(f"All available groups: {sorted(all_groups)}")
+
     # Generate M3U playlist
     m3u_playlist = "#EXTM3U\n"
+
+    # Track included groups
+    included_groups = set()
 
     for channel in channels:
         if channel['stream_type'] == 'live':
@@ -422,6 +470,7 @@ def generate_m3u():
                 include_channel = not any(group_matches(group_title, unwanted_group) for unwanted_group in unwanted_groups)
 
             if include_channel:
+                included_groups.add(group_title)
                 # Proxy the logo URL if available
                 original_logo = channel.get('stream_icon', '')
                 logo_url = f"{proxy_url}/image-proxy/{encode_url(original_logo)}" if original_logo else ''
@@ -434,6 +483,10 @@ def generate_m3u():
                 # Add channel to playlist
                 m3u_playlist += f'#EXTINF:0 tvg-name="{channel["name"]}" group-title="{group_title}" tvg-logo="{logo_url}",{channel["name"]}\n'
                 m3u_playlist += f'{stream_url}\n'
+
+    # Log included groups after filtering
+    logger.info(f"Groups included after filtering: {sorted(included_groups)}")
+    logger.info(f"Groups excluded after filtering: {sorted(all_groups - included_groups)}")
 
     # Return the M3U playlist
     return Response(
