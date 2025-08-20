@@ -153,22 +153,19 @@ GET /xmltv
 - `url` (required): The base URL of your IPTV service
 - `username` (required): Your IPTV service username
 - `password` (required): Your IPTV service password
-- `unwanted_groups` (optional): A comma-separated list of group names to exclude
-- `wanted_groups` (optional): A comma-separated list of group names to include (takes precedence over unwanted_groups)
 - `proxy_url` (optional): Custom base URL for proxied content (overrides auto-detection)
 
-Note: Wildcard patterns are also supported for group filtering in the XMLTV endpoint, just like for the M3U endpoint.
 
 ##### Example Request
 
 ```
-http://localhost:5000/xmltv?url=http://your-iptv-service.com&username=your_username&password=your_password&unwanted_groups=news,sports
+http://localhost:5000/xmltv?url=http://your-iptv-service.com&username=your_username&password=your_password
 ```
 
-Or to only include specific groups:
+With a custom proxy URL:
 
 ```
-http://localhost:5000/xmltv?url=http://your-iptv-service.com&username=your_username&password=your_password&wanted_groups=movies,series
+http://localhost:5000/xmltv?url=http://your-iptv-service.com&username=your_username&password=your_password&proxy_url=https://your-public-domain.com
 ```
 
 #### Image Proxy

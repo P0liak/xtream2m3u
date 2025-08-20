@@ -293,12 +293,7 @@ def generate_xmltv():
     if error:
         return error
 
-    # Parse filter parameters
-    unwanted_groups = parse_group_list(request.args.get('unwanted_groups', ''))
-    wanted_groups = parse_group_list(request.args.get('wanted_groups', ''))
-
-    # Log filter parameters
-    logger.info(f"Filter parameters - wanted_groups: {wanted_groups}, unwanted_groups: {unwanted_groups}")
+    # No filtering supported for XMLTV endpoint
 
     # Validate credentials
     user_data, error_json, error_code = validate_xtream_credentials(url, username, password)
@@ -313,94 +308,25 @@ def generate_xmltv():
     if isinstance(xmltv_data, tuple):  # Error response
         return json.dumps(xmltv_data[0]), xmltv_data[1], {'Content-Type': 'application/json'}
 
-    # If not filtering or proxying, return the original XMLTV
-    if not (unwanted_groups or wanted_groups) and not proxy_url:
+    # If not proxying, return the original XMLTV
+    if not proxy_url:
         return Response(
             xmltv_data,
             mimetype='application/xml',
             headers={"Content-Disposition": "attachment; filename=guide.xml"}
         )
 
-    # Replace image URLs in the XMLTV content
-    if proxy_url:
-        def replace_icon_url(match):
-            original_url = match.group(1)
-            proxied_url = f"{proxy_url}/image-proxy/{encode_url(original_url)}"
-            return f'<icon src="{proxied_url}"'
+    # Replace image URLs in the XMLTV content with proxy URLs
+    def replace_icon_url(match):
+        original_url = match.group(1)
+        proxied_url = f"{proxy_url}/image-proxy/{encode_url(original_url)}"
+        return f'<icon src="{proxied_url}"'
 
-        xmltv_data = re.sub(
-            r'<icon src="([^"]+)"',
-            replace_icon_url,
-            xmltv_data
-        )
-
-    # If filtering is enabled, filter the XML
-    if unwanted_groups or wanted_groups:
-        try:
-            # Fetch categories and channels for filtering
-            categories, channels, error_json, error_code = fetch_categories_and_channels(url, username, password)
-            if error_json:
-                # If we can't get filtering data, just return the unfiltered XMLTV
-                logger.warning("Could not fetch filtering data, returning unfiltered XMLTV")
-            else:
-                # Create category mapping
-                category_names = {cat['category_id']: cat['category_name'] for cat in categories}
-
-                # Log all available groups
-                all_groups = set(category_names.values())
-                logger.info(f"All available groups: {sorted(all_groups)}")
-
-                # Create set of channel IDs to exclude
-                excluded_channels = set()
-                included_groups = set()
-
-                for channel in channels:
-                    if channel['stream_type'] == 'live':
-                        group_title = category_names.get(channel['category_id'], '')
-
-                        if wanted_groups:
-                            # If wanted_groups is specified, exclude channels NOT in wanted groups
-                            if not any(group_matches(group_title, wanted_group) for wanted_group in wanted_groups):
-                                excluded_channels.add(str(channel['stream_id']))
-                            else:
-                                included_groups.add(group_title)
-                        elif unwanted_groups:
-                            # Otherwise use unwanted_groups filtering
-                            if any(group_matches(group_title, unwanted_group) for unwanted_group in unwanted_groups):
-                                excluded_channels.add(str(channel['stream_id']))
-                            else:
-                                included_groups.add(group_title)
-
-                # Log included and excluded groups
-                logger.info(f"Groups included after filtering: {sorted(included_groups)}")
-                logger.info(f"Groups excluded after filtering: {sorted(all_groups - included_groups)}")
-
-                if excluded_channels:
-                    # Simple XML filtering using string operations
-                    filtered_lines = []
-                    current_channel = None
-                    skip_current = False
-
-                    for line in xmltv_data.split('\n'):
-                        if '<channel id="' in line:
-                            current_channel = line.split('"')[1]
-                            skip_current = current_channel in excluded_channels
-
-                        if not skip_current:
-                            if '<programme ' in line:
-                                channel_id = line.split('channel="')[1].split('"')[0]
-                                skip_current = channel_id in excluded_channels
-
-                            if not skip_current:
-                                filtered_lines.append(line)
-
-                        if '</channel>' in line or '</programme>' in line:
-                            skip_current = False
-
-                    xmltv_data = '\n'.join(filtered_lines)
-        except Exception as e:
-            logger.error(f"Failed to filter XMLTV: {e}")
-            # If filtering fails, return unfiltered XMLTV
+    xmltv_data = re.sub(
+        r'<icon src="([^"]+)"',
+        replace_icon_url,
+        xmltv_data
+    )
 
     # Return the XMLTV data
     return Response(
