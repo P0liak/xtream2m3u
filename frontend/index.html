@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>xtream2m3u - M3U Playlist Generator</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo">
+                <img src="/assets/logo.png" alt="xtream2m3u Logo">
+            </div>
+            <h1>xtream2m3u</h1>
+            <p class="subtitle">Convert Xtream IPTV APIs into customizable M3U playlists</p>
+        </div>
+
+                        <!-- Step 1: Credentials -->
+        <div class="step active" id="step1">
+            <div class="card">
+                <div class="card-header">
+                    🔐 Xtream API Credentials
+                </div>
+                <div class="card-body">
+                    <div class="privacy-notice">
+                        <div class="icon">🔒</div>
+                        <div>
+                            <strong>Privacy Notice:</strong> Your credentials are only used to connect to your IPTV service and are never saved or stored on our servers.
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="url">IPTV Service URL (DNS)</label>
+                        <input type="url" id="url" placeholder="http://your-iptv-service.com" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="username">Username</label>
+                        <input type="text" id="username" placeholder="your_username" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="password">Password</label>
+                        <input type="password" id="password" placeholder="your_password" required>
+                    </div>
+
+                    <button class="btn btn-primary" onclick="loadCategories()">
+                        <span id="loadCategoriesText">Continue to Category Selection</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading State -->
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>Loading categories...</p>
+        </div>
+
+        <!-- Step 2: Category Selection -->
+        <div class="step" id="step2">
+            <div class="card">
+                <div class="card-header">
+                    📁 Select Categories
+                </div>
+                <div class="card-body">
+                    <div class="filter-mode">
+                        <label>
+                            <input type="radio" name="filterMode" value="include" checked>
+                            <span>Include only selected</span>
+                        </label>
+                        <label>
+                            <input type="radio" name="filterMode" value="exclude">
+                            <span>Exclude selected</span>
+                        </label>
+                    </div>
+
+                    <div class="selection-counter" id="selectionCounter">
+                        <span id="selectionText">Click categories to select them (or leave empty to include all)</span>
+                    </div>
+
+                    <div class="category-chips" id="categoryChips">
+                        <!-- Categories will be populated here -->
+                    </div>
+
+                    <div style="display: flex; gap: 1rem; justify-content: center; margin-top: 2rem; flex-wrap: wrap;">
+                        <button class="btn btn-success" onclick="showConfirmation()">
+                            ⚡ Generate Playlist
+                        </button>
+                        <button class="btn btn-secondary" onclick="clearSelection()">
+                            🗑️ Clear Selection
+                        </button>
+                        <button class="btn btn-secondary" onclick="goBackToStep1()">
+                            ← Back to Credentials
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 3: Success State -->
+        <div class="step" id="step3">
+            <div class="card">
+                <div class="success-state">
+                    <div class="success-checkmark">✓</div>
+                    <h2 class="success-title">Playlist Generated!</h2>
+                    <p class="success-message">Your M3U playlist has been successfully created and is ready for download.</p>
+                    <div class="success-actions">
+                        <a class="btn btn-success download-link" id="finalDownloadLink" style="display: none;">
+                            📥 Download M3U Playlist
+                        </a>
+                        <button class="btn btn-primary" onclick="startOver()">
+                            🔄 Start Over
+                        </button>
+                        <button class="btn btn-secondary" onclick="useOtherCredentials()">
+                            👤 Use Other Credentials
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Confirmation Modal -->
+        <div class="modal" id="confirmationModal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Confirm Playlist Generation</h3>
+                    <p style="color: var(--text-secondary);">Please review your selections before generating the playlist</p>
+                </div>
+
+                <div class="modal-summary" id="modalSummary">
+                    <!-- Summary will be populated here -->
+                </div>
+
+                <div class="modal-actions">
+                    <button class="btn btn-success" onclick="confirmGeneration()">
+                        ✓ Generate Playlist
+                    </button>
+                    <button class="btn btn-secondary" onclick="closeModal()">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="results" id="results"></div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

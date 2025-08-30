@@ -11,13 +11,41 @@ from functools import lru_cache
 import dns.resolver
 import requests
 from fake_useragent import UserAgent
-from flask import Flask, Response, request
+from flask import Flask, Response, request, send_from_directory
 
 # Configure logging
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+@app.route('/')
+def serve_frontend():
+    """Serve the frontend index.html file"""
+    return send_from_directory('frontend', 'index.html')
+
+@app.route('/assets/<path:filename>')
+def serve_assets(filename):
+    """Serve assets from the docs/assets directory"""
+    try:
+        return send_from_directory('docs/assets', filename)
+    except:
+        return "Asset not found", 404
+
+@app.route('/<path:filename>')
+def serve_static_files(filename):
+    """Serve static files from the frontend directory"""
+    # Don't serve API routes through static file handler
+    api_routes = ['m3u', 'xmltv', 'categories', 'image-proxy', 'stream-proxy', 'assets']
+    if filename.split('/')[0] in api_routes:
+        return "Not found", 404
+
+    # Only serve files that exist in the frontend directory
+    try:
+        return send_from_directory('frontend', filename)
+    except:
+        # If file doesn't exist in frontend, return 404
+        return "File not found", 404
 
 # Get default proxy URL from environment variable
 DEFAULT_PROXY_URL = os.environ.get('PROXY_URL')
@@ -285,6 +313,27 @@ def fetch_categories_and_channels(url, username, password):
 
     return categories, channels, None, None
 
+@app.route('/categories', methods=['GET'])
+def get_categories():
+    """Get all available categories from the Xtream API"""
+    # Get and validate parameters
+    url, username, password, proxy_url, error = get_required_params()
+    if error:
+        return error
+
+    # Validate credentials
+    user_data, error_json, error_code = validate_xtream_credentials(url, username, password)
+    if error_json:
+        return error_json, error_code, {'Content-Type': 'application/json'}
+
+    # Fetch categories
+    categories, channels, error_json, error_code = fetch_categories_and_channels(url, username, password)
+    if error_json:
+        return error_json, error_code, {'Content-Type': 'application/json'}
+
+    # Return categories as JSON
+    return json.dumps(categories), 200, {'Content-Type': 'application/json'}
+
 @app.route('/xmltv', methods=['GET'])
 def generate_xmltv():
     """Generate a filtered XMLTV file from the Xtream API"""
@@ -397,9 +446,12 @@ def generate_m3u():
 
             if include_channel:
                 included_groups.add(group_title)
-                # Proxy the logo URL if available
+                # Handle logo URL - proxy only if stream proxying is enabled
                 original_logo = channel.get('stream_icon', '')
-                logo_url = f"{proxy_url}/image-proxy/{encode_url(original_logo)}" if original_logo else ''
+                if original_logo and not no_stream_proxy:
+                    logo_url = f"{proxy_url}/image-proxy/{encode_url(original_logo)}"
+                else:
+                    logo_url = original_logo
 
                 # Create the stream URL with or without proxying
                 stream_url = f'{stream_base_url}{channel["stream_id"]}.ts'
