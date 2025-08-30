@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>xtream2m3u - M3U Playlist Generator</title>
     <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
     <div class="container">
         <div class="header">
@@ -16,7 +18,7 @@
             <p class="subtitle">Convert Xtream IPTV APIs into customizable M3U playlists</p>
         </div>
 
-                        <!-- Step 1: Credentials -->
+        <!-- Step 1: Credentials -->
         <div class="step active" id="step1">
             <div class="card">
                 <div class="card-header">
@@ -26,7 +28,8 @@
                     <div class="privacy-notice">
                         <div class="icon">🔒</div>
                         <div>
-                            <strong>Privacy Notice:</strong> Your credentials are only used to connect to your IPTV service and are never saved or stored on our servers.
+                            <strong>Privacy Notice:</strong> Your credentials are only used to connect to your IPTV
+                            service and are never saved or stored on our servers.
                         </div>
                     </div>
 
@@ -43,6 +46,19 @@
                     <div class="form-group">
                         <label for="password">Password</label>
                         <input type="password" id="password" placeholder="your_password" required>
+                    </div>
+
+                    <div class="form-group">
+                        <div class="checkbox-wrapper">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="includeVod">
+                                <span class="checkmark"></span>
+                                <span class="checkbox-text">
+                                    <strong>Include VOD, Movies & Shows</strong>
+                                    <small>Add Video On Demand content in addition to Live TV channels</small>
+                                </span>
+                            </label>
+                        </div>
                     </div>
 
                     <button class="btn btn-primary" onclick="loadCategories()">
@@ -105,7 +121,8 @@
                 <div class="success-state">
                     <div class="success-checkmark">✓</div>
                     <h2 class="success-title">Playlist Generated!</h2>
-                    <p class="success-message">Your M3U playlist has been successfully created and is ready for download.</p>
+                    <p class="success-message">Your M3U playlist has been successfully created and is ready for
+                        download.</p>
                     <div class="success-actions">
                         <a class="btn btn-success download-link" id="finalDownloadLink" style="display: none;">
                             📥 Download M3U Playlist
@@ -126,7 +143,8 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h3>Confirm Playlist Generation</h3>
-                    <p style="color: var(--text-secondary);">Please review your selections before generating the playlist</p>
+                    <p style="color: var(--text-secondary);">Please review your selections before generating the
+                        playlist</p>
                 </div>
 
                 <div class="modal-summary" id="modalSummary">
@@ -149,4 +167,5 @@
 
     <script src="script.js"></script>
 </body>
+
 </html>
