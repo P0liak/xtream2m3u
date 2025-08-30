@@ -315,83 +315,117 @@ def fetch_categories_and_channels(url, username, password, include_vod=False):
     all_categories = []
     all_streams = []
 
-    # Fetch live categories and streams
-    live_category_url = f"{url}/player_api.php?username={username}&password={password}&action=get_live_categories"
-    live_categories = fetch_api_data(live_category_url)
+    try:
+        # Fetch live categories and streams
+        live_category_url = f"{url}/player_api.php?username={username}&password={password}&action=get_live_categories"
+        live_categories = fetch_api_data(live_category_url, timeout=60)
 
-    if isinstance(live_categories, tuple):  # Error response
-        return None, None, live_categories[0], live_categories[1]
+        if isinstance(live_categories, tuple):  # Error response
+            return None, None, live_categories[0], live_categories[1]
 
-    live_channel_url = f"{url}/player_api.php?username={username}&password={password}&action=get_live_streams"
-    live_channels = fetch_api_data(live_channel_url)
+        live_channel_url = f"{url}/player_api.php?username={username}&password={password}&action=get_live_streams"
+        live_channels = fetch_api_data(live_channel_url, timeout=180)  # Much longer timeout for large channel lists
 
-    if isinstance(live_channels, tuple):  # Error response
-        return None, None, live_channels[0], live_channels[1]
+        if isinstance(live_channels, tuple):  # Error response
+            return None, None, live_channels[0], live_channels[1]
 
-    if not isinstance(live_categories, list) or not isinstance(live_channels, list):
+        if not isinstance(live_categories, list) or not isinstance(live_channels, list):
+            return (
+                None,
+                None,
+                json.dumps(
+                    {
+                        "error": "Invalid Data Format",
+                        "details": "Live categories or channels data is not in the expected format",
+                    }
+                ),
+                500,
+            )
+
+        # Add content type to live categories and streams
+        for category in live_categories:
+            category["content_type"] = "live"
+        for stream in live_channels:
+            stream["content_type"] = "live"
+
+        all_categories.extend(live_categories)
+        all_streams.extend(live_channels)
+
+        # If VOD is requested, fetch VOD content with timeout handling
+        if include_vod:
+            logger.info("Fetching VOD content - this may take longer...")
+
+            try:
+                # Fetch VOD categories with timeout
+                vod_category_url = f"{url}/player_api.php?username={username}&password={password}&action=get_vod_categories"
+                vod_categories = fetch_api_data(vod_category_url, timeout=60)
+
+                if isinstance(vod_categories, list):
+                    # Add content type to VOD categories
+                    for category in vod_categories:
+                        category["content_type"] = "vod"
+                    all_categories.extend(vod_categories)
+                    logger.info(f"Added {len(vod_categories)} VOD categories")
+
+                    # Only fetch VOD streams if categories were successful
+                    vod_streams_url = f"{url}/player_api.php?username={username}&password={password}&action=get_vod_streams"
+                    vod_streams = fetch_api_data(vod_streams_url, timeout=240)  # Very long timeout for massive VOD libraries
+
+                    if isinstance(vod_streams, list):
+                        # Add content type to VOD streams
+                        for stream in vod_streams:
+                            stream["content_type"] = "vod"
+                        all_streams.extend(vod_streams)
+                        logger.info(f"Added {len(vod_streams)} VOD streams")
+
+            except Exception as e:
+                logger.warning(f"Failed to fetch VOD content: {e}")
+                # Continue without VOD content rather than failing completely
+
+            try:
+                # Fetch series categories with timeout
+                series_category_url = (
+                    f"{url}/player_api.php?username={username}&password={password}&action=get_series_categories"
+                )
+                series_categories = fetch_api_data(series_category_url, timeout=60)
+
+                if isinstance(series_categories, list):
+                    # Add content type to series categories
+                    for category in series_categories:
+                        category["content_type"] = "series"
+                    all_categories.extend(series_categories)
+                    logger.info(f"Added {len(series_categories)} series categories")
+
+                    # Only fetch series if categories were successful
+                    series_url = f"{url}/player_api.php?username={username}&password={password}&action=get_series"
+                    series = fetch_api_data(series_url, timeout=240)  # Very long timeout for massive series libraries
+
+                    if isinstance(series, list):
+                        # Add content type to series
+                        for show in series:
+                            show["content_type"] = "series"
+                        all_streams.extend(series)
+                        logger.info(f"Added {len(series)} series")
+
+            except Exception as e:
+                logger.warning(f"Failed to fetch series content: {e}")
+                # Continue without series content rather than failing completely
+
+    except Exception as e:
+        logger.error(f"Critical error fetching API data: {e}")
         return (
             None,
             None,
             json.dumps(
                 {
-                    "error": "Invalid Data Format",
-                    "details": "Live categories or channels data is not in the expected format",
+                    "error": "API Fetch Error",
+                    "details": f"Failed to fetch data from IPTV service: {str(e)}",
                 }
             ),
             500,
         )
 
-    # Add content type to live categories and streams
-    for category in live_categories:
-        category["content_type"] = "live"
-    for stream in live_channels:
-        stream["content_type"] = "live"
-
-    all_categories.extend(live_categories)
-    all_streams.extend(live_channels)
-
-    # If VOD is requested, fetch VOD and series content
-    if include_vod:
-        # Fetch VOD categories and streams
-        vod_category_url = f"{url}/player_api.php?username={username}&password={password}&action=get_vod_categories"
-        vod_categories = fetch_api_data(vod_category_url)
-
-        if isinstance(vod_categories, list):
-            # Add content type to VOD categories
-            for category in vod_categories:
-                category["content_type"] = "vod"
-            all_categories.extend(vod_categories)
-
-            vod_streams_url = f"{url}/player_api.php?username={username}&password={password}&action=get_vod_streams"
-            vod_streams = fetch_api_data(vod_streams_url)
-
-            if isinstance(vod_streams, list):
-                # Add content type to VOD streams
-                for stream in vod_streams:
-                    stream["content_type"] = "vod"
-                all_streams.extend(vod_streams)
-
-        # Fetch series categories and content
-        series_category_url = (
-            f"{url}/player_api.php?username={username}&password={password}&action=get_series_categories"
-        )
-        series_categories = fetch_api_data(series_category_url)
-
-        if isinstance(series_categories, list):
-            # Add content type to series categories
-            for category in series_categories:
-                category["content_type"] = "series"
-            all_categories.extend(series_categories)
-
-            series_url = f"{url}/player_api.php?username={username}&password={password}&action=get_series"
-            series = fetch_api_data(series_url)
-
-            if isinstance(series, list):
-                # Add content type to series
-                for show in series:
-                    show["content_type"] = "series"
-                all_streams.extend(series)
-
+    logger.info(f"Successfully fetched {len(all_categories)} total categories and {len(all_streams)} total streams")
     return all_categories, all_streams, None, None
 
 
@@ -403,8 +437,8 @@ def get_categories():
     if error:
         return error
 
-    # Check for VOD parameter
-    include_vod = request.args.get("include_vod", "").lower() == "true"
+    # Check for VOD parameter - default to false to avoid timeouts
+    include_vod = request.args.get("include_vod", "false").lower() == "true"
 
     # Validate credentials
     user_data, error_json, error_code = validate_xtream_credentials(url, username, password)
@@ -475,7 +509,7 @@ def generate_m3u():
     unwanted_groups = parse_group_list(request.args.get("unwanted_groups", ""))
     wanted_groups = parse_group_list(request.args.get("wanted_groups", ""))
     no_stream_proxy = request.args.get("nostreamproxy", "").lower() == "true"
-    include_vod = request.args.get("include_vod", "").lower() == "true"
+    include_vod = request.args.get("include_vod", "false").lower() == "true"  # Default to false to avoid timeouts
 
     # Log filter parameters
     logger.info(
