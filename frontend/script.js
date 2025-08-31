@@ -173,7 +173,7 @@ function updateSelectionCounter() {
       }
     });
 
-    // Build detailed text
+    // Build detailed text with method info
     const parts = [];
     if (contentTypeCounts.live > 0)
       parts.push(`${contentTypeCounts.live} Live TV`);
@@ -183,7 +183,10 @@ function updateSelectionCounter() {
       parts.push(`${contentTypeCounts.series} TV Shows`);
 
     const breakdown = parts.length > 0 ? ` (${parts.join(", ")})` : "";
-    text.textContent = `${selectedCount} categories will be ${action}${breakdown}`;
+    const methodInfo = selectedCount > 10 ? " • Using POST method for large request" : "";
+    const timeEstimate = selectedCount > 20 ? " • Est. 2-4 min" : selectedCount > 10 ? " • Est. 1-2 min" : "";
+
+    text.textContent = `${selectedCount} categories will be ${action}${breakdown}${methodInfo}${timeEstimate}`;
     counter.classList.add("has-selection");
   }
 }
@@ -260,26 +263,53 @@ async function confirmGeneration() {
     "Generating your playlist...";
 
   try {
-    const params = new URLSearchParams({
+    // Build request data
+    const requestData = {
       url: url,
       username: username,
       password: password,
       nostreamproxy: "true",
-    });
+    };
 
     if (includeVod) {
-      params.append("include_vod", "true");
+      requestData.include_vod = "true";
     }
 
     if (selectedCategories.length > 0) {
       if (filterMode === "include") {
-        params.append("wanted_groups", selectedCategories.join(","));
+        requestData.wanted_groups = selectedCategories.join(",");
       } else {
-        params.append("unwanted_groups", selectedCategories.join(","));
+        requestData.unwanted_groups = selectedCategories.join(",");
       }
     }
 
-    const response = await fetch(`/m3u?${params}`);
+    // Use POST for large filter lists to avoid URL length limits
+    const shouldUsePost = selectedCategories.length > 10 ||
+                        JSON.stringify(requestData).length > 2000;
+
+    console.log(`Using ${shouldUsePost ? 'POST' : 'GET'} method for ${selectedCategories.length} categories`);
+
+    let response;
+    if (shouldUsePost) {
+      // Show better progress message for large requests
+      document.querySelector("#loading p").textContent =
+        `Processing ${selectedCategories.length} categories - this may take 2-4 minutes...`;
+
+      response = await fetch("/m3u", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestData)
+      });
+    } else {
+      // Use GET for small requests
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(requestData)) {
+        params.append(key, value);
+      }
+      response = await fetch(`/m3u?${params}`);
+    }
 
     if (!response.ok) {
       const errorText = await response.text();

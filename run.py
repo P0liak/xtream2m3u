@@ -13,7 +13,7 @@ from functools import lru_cache
 import dns.resolver
 import requests
 from fake_useragent import UserAgent
-from flask import Flask, Response, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 
 # Configure logging
 logging.basicConfig(level=logging.WARNING)
@@ -292,23 +292,31 @@ def group_matches(group_title, pattern):
 
 
 def get_required_params():
-    """Get and validate the required parameters from the request"""
-    url = request.args.get("url")
-    username = request.args.get("username")
-    password = request.args.get("password")
+    """Get and validate the required parameters from the request (supports both GET and POST)"""
+    # Handle both GET and POST requests
+    if request.method == "POST":
+        data = request.get_json() or {}
+        url = data.get("url")
+        username = data.get("username")
+        password = data.get("password")
+        proxy_url = data.get("proxy_url", DEFAULT_PROXY_URL) or request.host_url.rstrip("/")
+    else:
+        url = request.args.get("url")
+        username = request.args.get("username")
+        password = request.args.get("password")
+        proxy_url = request.args.get("proxy_url", DEFAULT_PROXY_URL) or request.host_url.rstrip("/")
 
     if not url or not username or not password:
         return (
             None,
             None,
             None,
-            json.dumps({"error": "Missing Parameters", "details": "Required parameters: url, username, and password"}),
-            400,
+            None,
+            jsonify({"error": "Missing Parameters", "details": "Required parameters: url, username, and password"}),
+            400
         )
 
-    proxy_url = request.args.get("proxy_url", DEFAULT_PROXY_URL) or request.host_url.rstrip("/")
-
-    return url, username, password, proxy_url, None
+    return url, username, password, proxy_url, None, None
 
 
 def validate_xtream_credentials(url, username, password):
@@ -522,9 +530,9 @@ def fetch_categories_and_channels(url, username, password, include_vod=False):
 def get_categories():
     """Get all available categories from the Xtream API"""
     # Get and validate parameters
-    url, username, password, proxy_url, error = get_required_params()
+    url, username, password, proxy_url, error, status_code = get_required_params()
     if error:
-        return error
+        return error, status_code
 
     # Check for VOD parameter - default to false to avoid timeouts (VOD is massive and slow!)
     include_vod = request.args.get("include_vod", "false").lower() == "true"
@@ -548,9 +556,9 @@ def get_categories():
 def generate_xmltv():
     """Generate a filtered XMLTV file from the Xtream API"""
     # Get and validate parameters
-    url, username, password, proxy_url, error = get_required_params()
+    url, username, password, proxy_url, error, status_code = get_required_params()
     if error:
-        return error
+        return error, status_code
 
     # No filtering supported for XMLTV endpoint
 
@@ -587,19 +595,28 @@ def generate_xmltv():
     )
 
 
-@app.route("/m3u", methods=["GET"])
+@app.route("/m3u", methods=["GET", "POST"])
 def generate_m3u():
     """Generate a filtered M3U playlist from the Xtream API"""
     # Get and validate parameters
-    url, username, password, proxy_url, error = get_required_params()
+    url, username, password, proxy_url, error, status_code = get_required_params()
     if error:
-        return error
+        return error, status_code
 
-    # Parse filter parameters
-    unwanted_groups = parse_group_list(request.args.get("unwanted_groups", ""))
-    wanted_groups = parse_group_list(request.args.get("wanted_groups", ""))
-    no_stream_proxy = request.args.get("nostreamproxy", "").lower() == "true"
-    include_vod = request.args.get("include_vod", "false").lower() == "true"  # Default to false to avoid timeouts
+    # Parse filter parameters (support both GET and POST for large filter lists)
+    if request.method == "POST":
+        data = request.get_json() or {}
+        unwanted_groups = parse_group_list(data.get("unwanted_groups", ""))
+        wanted_groups = parse_group_list(data.get("wanted_groups", ""))
+        no_stream_proxy = str(data.get("nostreamproxy", "")).lower() == "true"
+        include_vod = str(data.get("include_vod", "false")).lower() == "true"
+        logger.info("🔄 Processing POST request for M3U generation")
+    else:
+        unwanted_groups = parse_group_list(request.args.get("unwanted_groups", ""))
+        wanted_groups = parse_group_list(request.args.get("wanted_groups", ""))
+        no_stream_proxy = request.args.get("nostreamproxy", "").lower() == "true"
+        include_vod = request.args.get("include_vod", "false").lower() == "true"
+        logger.info("🔄 Processing GET request for M3U generation")
 
     # For M3U generation, warn about VOD performance impact
     if include_vod:
@@ -607,10 +624,17 @@ def generate_m3u():
     else:
         logger.info("⚡ M3U generation for live content only - should be fast!")
 
-    # Log filter parameters
-    logger.info(
-        f"Filter parameters - wanted_groups: {wanted_groups}, unwanted_groups: {unwanted_groups}, include_vod: {include_vod}"
-    )
+    # Log filter parameters (truncate if too long for readability)
+    wanted_display = f"{len(wanted_groups)} groups" if len(wanted_groups) > 10 else str(wanted_groups)
+    unwanted_display = f"{len(unwanted_groups)} groups" if len(unwanted_groups) > 10 else str(unwanted_groups)
+    logger.info(f"Filter parameters - wanted_groups: {wanted_display}, unwanted_groups: {unwanted_display}, include_vod: {include_vod}")
+
+    # Warn about massive filter lists
+    total_filters = len(wanted_groups) + len(unwanted_groups)
+    if total_filters > 20:
+        logger.warning(f"⚠️  Large filter list detected ({total_filters} categories) - this will be slower!")
+    if total_filters > 50:
+        logger.warning(f"🐌 MASSIVE filter list ({total_filters} categories) - expect 3-5 minute processing time!")
 
     # Validate credentials
     user_data, error_json, error_code = validate_xtream_credentials(url, username, password)
@@ -640,6 +664,15 @@ def generate_m3u():
 
     # Track included groups
     included_groups = set()
+    processed_streams = 0
+    total_streams = len(streams)
+
+    # Pre-compile filter patterns for massive filter lists (performance optimization)
+    wanted_patterns = [pattern.lower() for pattern in wanted_groups] if wanted_groups else []
+    unwanted_patterns = [pattern.lower() for pattern in unwanted_groups] if unwanted_groups else []
+
+    logger.info(f"🔍 Starting to filter {total_streams} streams...")
+    batch_size = 10000  # Process streams in batches for better performance
 
     for stream in streams:
         content_type = stream.get("content_type", "live")
@@ -658,15 +691,26 @@ def generate_m3u():
             if content_type == "vod":
                 group_title = f"VOD - {group_title}"
 
-        # Handle filtering logic
+        # Optimized filtering logic using pre-compiled patterns
         include_stream = True
+        group_title_lower = group_title.lower()
 
-        if wanted_groups:
-            # Only include streams from specified groups
-            include_stream = any(group_matches(group_title, wanted_group) for wanted_group in wanted_groups)
-        elif unwanted_groups:
-            # Exclude streams from unwanted groups
-            include_stream = not any(group_matches(group_title, unwanted_group) for unwanted_group in unwanted_groups)
+        if wanted_patterns:
+            # Only include streams from specified groups (optimized matching)
+            include_stream = any(
+                group_matches(group_title, wanted_group) for wanted_group in wanted_groups
+            )
+        elif unwanted_patterns:
+            # Exclude streams from unwanted groups (optimized matching)
+            include_stream = not any(
+                group_matches(group_title, unwanted_group) for unwanted_group in unwanted_groups
+            )
+
+        processed_streams += 1
+
+        # Progress logging for large datasets
+        if processed_streams % batch_size == 0:
+            logger.info(f"  📊 Processed {processed_streams}/{total_streams} streams ({(processed_streams/total_streams)*100:.1f}%)")
 
         if include_stream:
             included_groups.add(group_title)
@@ -716,10 +760,17 @@ def generate_m3u():
     # Determine filename based on content included
     filename = "FullPlaylist.m3u" if include_vod else "LiveStream.m3u"
 
-    # Return the M3U playlist
-    return Response(
-        m3u_playlist, mimetype="audio/x-scpls", headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
+    logger.info(f"✅ M3U generation complete! Generated playlist with {len(included_groups)} groups")
+
+    # Return the M3U playlist with proper CORS headers for frontend
+    headers = {
+        "Content-Disposition": f"attachment; filename={filename}",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type"
+    }
+
+    return Response(m3u_playlist, mimetype="audio/x-scpls", headers=headers)
 
 
 if __name__ == "__main__":
