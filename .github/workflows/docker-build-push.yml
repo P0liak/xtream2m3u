@@ -1,6 +1,20 @@
 name: Build and Push Docker Image
 
 on:
+  workflow_dispatch:
+    inputs:
+      universal_macos:
+        description: "xtream2m3u"
+        required: false
+        default: "false"
+      release:
+        description: "Push a new release"
+        required: false
+        default: "true"
+      version:
+        description: "Version"
+        required: false
+        version: 1.0.0
   push:
     branches: [ main ]
   pull_request:
